@@ -90,7 +90,7 @@ type Session struct {
 	RefreshToken string    `json:"refresh_token,omitempty"`
 }
 
-func (s *Session) isEmpty() bool {
+func (s *Session) isZero() bool {
 	return *s == Session{}
 }
 
@@ -149,7 +149,7 @@ func newServer() *Server {
 func (s *Server) HandleAuth(w http.ResponseWriter, r *http.Request) {
 	session := s.getSession(r)
 
-	if session.isEmpty() {
+	if session.isZero() {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
@@ -158,6 +158,7 @@ func (s *Server) HandleAuth(w http.ResponseWriter, r *http.Request) {
 		var err error
 		session, err = s.refreshToken(r.Context(), w, session.RefreshToken)
 		if err != nil {
+			err = fmt.Errorf("Error refreshing token: %v", err)
 			s.handleError(w, err, http.StatusUnauthorized)
 			return
 		}
