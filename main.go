@@ -166,7 +166,7 @@ func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	err := s.refreshToken(r.Context(), w, group, session.RefreshToken)
 	if err == nil {
-		w.WriteHeader(http.StatusOK)
+		s.handleRedirect(w, r, redirect)
 		return
 	}
 
@@ -265,11 +265,7 @@ func (s *Server) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Created session for %v", email)
 
-	if redirect != "" {
-		http.Redirect(w, r, redirect, http.StatusFound)
-	} else {
-		w.WriteHeader(http.StatusOK)
-	}
+	s.handleRedirect(w, r, redirect)
 }
 
 func (s *Server) exchangeToken(ctx context.Context, code string) (*oauth2.Token, error) {
@@ -318,6 +314,13 @@ func (s *Server) refreshToken(ctx context.Context, w http.ResponseWriter, group 
 	log.Printf("Refreshed session for %v", email)
 
 	return nil
+}
+func (s *Server) handleRedirect(w http.ResponseWriter, r *http.Request, redirect string) {
+	if redirect != "" {
+		http.Redirect(w, r, redirect, http.StatusFound)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
 }
 
 func (s *Server) handleError(w http.ResponseWriter, err error, code int) {
