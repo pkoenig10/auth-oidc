@@ -47,16 +47,6 @@ const (
 	idTokenKey = "id_token"
 )
 
-// Session is the session information.
-type Session struct {
-	Redirect     string    `json:"redirect,omitempty"`
-	State        string    `json:"state,omitempty"`
-	Nonce        string    `json:"nonce,omitempty"`
-	Email        string    `json:"email,omitempty"`
-	Expiry       time.Time `json:"expiry,omitempty"`
-	RefreshToken string    `json:"refresh_token,omitempty"`
-}
-
 var (
 	httpAddress = flag.String("http-address", ":4180", "")
 
@@ -88,6 +78,24 @@ func main() {
 	http.HandleFunc(callbackPath, s.HandleCallback)
 
 	log.Fatal(http.ListenAndServe(*httpAddress, nil))
+}
+
+// Session is the session information.
+type Session struct {
+	Redirect     string    `json:"redirect,omitempty"`
+	State        string    `json:"state,omitempty"`
+	Nonce        string    `json:"nonce,omitempty"`
+	Email        string    `json:"email,omitempty"`
+	Expiry       time.Time `json:"expiry,omitempty"`
+	RefreshToken string    `json:"refresh_token,omitempty"`
+}
+
+func (s *Session) isEmpty() bool {
+	return *s == Session{}
+}
+
+func (s *Session) isExpired() bool {
+	return !time.Now().Before(s.Expiry)
 }
 
 // Server is the authentication and authorization server.
@@ -141,9 +149,18 @@ func newServer() *Server {
 func (s *Server) HandleAuth(w http.ResponseWriter, r *http.Request) {
 	session := s.getSession(r)
 
-	if !time.Now().Before(session.Expiry) {
+	if session.isEmpty() {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
+	}
+
+	if session.isExpired() {
+		var err error
+		session, err = s.refreshToken(r.Context(), w, session.RefreshToken)
+		if err != nil {
+			s.handleError(w, err, http.StatusUnauthorized)
+			return
+		}
 	}
 
 	group := strings.ToLower(r.URL.Query().Get(groupKey))
@@ -159,16 +176,7 @@ func (s *Server) HandleAuth(w http.ResponseWriter, r *http.Request) {
 
 // HandleLogin handles login.
 func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
-	session := s.getSession(r)
-
-	group := r.URL.Query().Get(groupKey)
 	redirect := r.URL.Query().Get(redirectKey)
-
-	err := s.refreshToken(r.Context(), w, group, session.RefreshToken)
-	if err == nil {
-		s.handleRedirect(w, r, redirect)
-		return
-	}
 
 	state, err := generateRandomString()
 	if err != nil {
@@ -184,7 +192,7 @@ func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session = &Session{
+	session := &Session{
 		Redirect: redirect,
 		State:    state,
 		Nonce:    nonce,
@@ -259,13 +267,17 @@ func (s *Server) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	err = s.setSession(w, session)
 	if err != nil {
-		s.handleError(w, err, http.StatusForbidden)
+		s.handleError(w, err, http.StatusInternalServerError)
 		return
 	}
 
 	log.Printf("Created session for %v", email)
 
-	s.handleRedirect(w, r, redirect)
+	if redirect != "" {
+		http.Redirect(w, r, redirect, http.StatusFound)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
 }
 
 func (s *Server) exchangeToken(ctx context.Context, code string) (*oauth2.Token, error) {
@@ -281,24 +293,24 @@ func (s *Server) verifyToken(ctx context.Context, token *oauth2.Token) (*oidc.ID
 	return s.verifier.Verify(ctx, idToken)
 }
 
-func (s *Server) refreshToken(ctx context.Context, w http.ResponseWriter, group string, refreshToken string) error {
+func (s *Server) refreshToken(ctx context.Context, w http.ResponseWriter, refreshToken string) (*Session, error) {
 	tokenSource := s.oauth2Config.TokenSource(ctx, &oauth2.Token{
 		RefreshToken: refreshToken,
 	})
 
 	token, err := tokenSource.Token()
 	if err != nil {
-		return fmt.Errorf("Error refreshing token: %v", err)
+		return nil, fmt.Errorf("Error refreshing token: %v", err)
 	}
 
 	idToken, err := s.verifyToken(ctx, token)
 	if err != nil {
-		return fmt.Errorf("Error verifying refreshed token: %v", err)
+		return nil, fmt.Errorf("Error verifying refreshed token: %v", err)
 	}
 
 	email, err := getEmail(idToken)
 	if err != nil {
-		return fmt.Errorf("Error reading email from refreshed token: %v", err)
+		return nil, fmt.Errorf("Error reading email from refreshed token: %v", err)
 	}
 
 	session := &Session{
@@ -308,19 +320,12 @@ func (s *Server) refreshToken(ctx context.Context, w http.ResponseWriter, group 
 	}
 	err = s.setSession(w, session)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	log.Printf("Refreshed session for %v", email)
 
-	return nil
-}
-func (s *Server) handleRedirect(w http.ResponseWriter, r *http.Request, redirect string) {
-	if redirect != "" {
-		http.Redirect(w, r, redirect, http.StatusFound)
-	} else {
-		w.WriteHeader(http.StatusOK)
-	}
+	return session, nil
 }
 
 func (s *Server) handleError(w http.ResponseWriter, err error, code int) {
