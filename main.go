@@ -125,7 +125,7 @@ func newServer() *Server {
 
 	users, err := readUsers()
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatalf("Error reading users files: %v", err)
 	}
 
 	return &Server{
