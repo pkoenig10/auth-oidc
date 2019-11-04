@@ -1,9 +1,9 @@
-FROM golang AS builder
+FROM golang:alpine AS builder
 
 COPY . /app
 
 WORKDIR /app
-RUN CGO_ENABLED=0 go build -o /oidc-rp
+RUN go build -o /oidc-rp
 
 FROM alpine
 
