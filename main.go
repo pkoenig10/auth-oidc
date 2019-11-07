@@ -82,11 +82,15 @@ func main() {
 	log.Fatal(http.ListenAndServe(*httpAddress, nil))
 }
 
+// LoginSession is the login session information.
+type LoginSession struct {
+	Redirect string `json:"redirect,omitempty"`
+	State    string `json:"state,omitempty"`
+	Nonce    string `json:"nonce,omitempty"`
+}
+
 // Session is the session information.
 type Session struct {
-	Redirect     string    `json:"redirect,omitempty"`
-	State        string    `json:"state,omitempty"`
-	Nonce        string    `json:"nonce,omitempty"`
 	Email        string    `json:"email,omitempty"`
 	Expiry       time.Time `json:"expiry,omitempty"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
@@ -145,15 +149,15 @@ func newServer() *Server {
 
 // HandleAuth handles authentication.
 func (s *Server) HandleAuth(w http.ResponseWriter, r *http.Request) {
-	session, err := s.store.getSession(r)
+	var session Session
+	err := s.store.getSession(r, &session)
 	if err != nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 
 	if session.isExpired() {
-		var err error
-		session, err = s.refreshToken(r.Context(), w, session.RefreshToken)
+		err := s.refreshToken(r.Context(), w, &session)
 		if err != nil {
 			err = fmt.Errorf("Error refreshing token: %v", err)
 			s.handleError(w, err, http.StatusUnauthorized)
@@ -190,12 +194,12 @@ func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session := &Session{
+	loginSession := LoginSession{
 		Redirect: redirect,
 		State:    state,
 		Nonce:    nonce,
 	}
-	err = s.store.setSession(w, session)
+	err = s.store.setSession(w, &loginSession)
 	if err != nil {
 		s.handleError(w, err, http.StatusInternalServerError)
 		return
@@ -209,8 +213,10 @@ func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 // HandleLogout handles logout.
 func (s *Server) HandleLogout(w http.ResponseWriter, r *http.Request) {
-	session, _ := s.store.getSession(r)
-	if session != nil {
+	var session Session
+	err := s.store.getSession(r, &session)
+
+	if err == nil {
 		log.Printf("Logout for %v", session.Email)
 	}
 
@@ -220,17 +226,18 @@ func (s *Server) HandleLogout(w http.ResponseWriter, r *http.Request) {
 
 // HandleCallback handles the callback.
 func (s *Server) HandleCallback(w http.ResponseWriter, r *http.Request) {
-	session, err := s.store.getSession(r)
+	var loginSession LoginSession
+	err := s.store.getSession(r, &loginSession)
 	if err != nil {
 		err := fmt.Errorf("Invalid session: %v", err)
 		s.handleError(w, err, http.StatusBadRequest)
 		return
 	}
 
-	redirect := session.Redirect
+	redirect := loginSession.Redirect
 
 	state := r.URL.Query().Get(stateKey)
-	if state != session.State {
+	if state != loginSession.State {
 		err := fmt.Errorf("Invalid state")
 		s.handleError(w, err, http.StatusBadRequest)
 		return
@@ -251,7 +258,7 @@ func (s *Server) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if idToken.Nonce != session.Nonce {
+	if idToken.Nonce != loginSession.Nonce {
 		err := fmt.Errorf("Invalid nonce")
 		s.handleError(w, err, http.StatusBadRequest)
 		return
@@ -264,12 +271,12 @@ func (s *Server) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session = &Session{
+	session := Session{
 		Email:        email,
 		Expiry:       idToken.Expiry,
 		RefreshToken: token.RefreshToken,
 	}
-	err = s.store.setSession(w, session)
+	err = s.store.setSession(w, &session)
 	if err != nil {
 		s.handleError(w, err, http.StatusInternalServerError)
 		return
@@ -297,39 +304,40 @@ func (s *Server) verifyToken(ctx context.Context, token *oauth2.Token) (*oidc.ID
 	return s.verifier.Verify(ctx, idToken)
 }
 
-func (s *Server) refreshToken(ctx context.Context, w http.ResponseWriter, refreshToken string) (*Session, error) {
-	tokenSource := s.oauth2Config.TokenSource(ctx, &oauth2.Token{
-		RefreshToken: refreshToken,
-	})
+func (s *Server) refreshToken(ctx context.Context, w http.ResponseWriter, session *Session) error {
+	token := &oauth2.Token{
+		RefreshToken: session.RefreshToken,
+	}
+	tokenSource := s.oauth2Config.TokenSource(ctx, token)
 
 	token, err := tokenSource.Token()
 	if err != nil {
-		return nil, fmt.Errorf("Error refreshing token: %v", err)
+		return fmt.Errorf("Error refreshing token: %v", err)
 	}
 
 	idToken, err := s.verifyToken(ctx, token)
 	if err != nil {
-		return nil, fmt.Errorf("Error verifying refreshed token: %v", err)
+		return fmt.Errorf("Error verifying refreshed token: %v", err)
 	}
 
 	email, err := getEmail(idToken)
 	if err != nil {
-		return nil, fmt.Errorf("Error reading email from refreshed token: %v", err)
+		return fmt.Errorf("Error reading email from refreshed token: %v", err)
 	}
 
-	session := &Session{
+	*session = Session{
 		Email:        email,
 		Expiry:       idToken.Expiry,
 		RefreshToken: token.RefreshToken,
 	}
 	err = s.store.setSession(w, session)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	log.Printf("Refreshed session for %v", email)
 
-	return session, nil
+	return nil
 }
 
 func (s *Server) handleError(w http.ResponseWriter, err error, code int) {
@@ -355,23 +363,22 @@ func newStore() (*Store, error) {
 	}, nil
 }
 
-func (s *Store) getSession(r *http.Request) (*Session, error) {
+func (s *Store) getSession(r *http.Request, dst interface{}) error {
 	cookie, err := r.Cookie(*cookieName)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	var session Session
-	err = s.fromCookieValue(cookie.Value, &session)
+	err = s.fromCookieValue(cookie.Value, &dst)
 	if err != nil {
-		return nil, fmt.Errorf("Error reading session cookie: %v", err)
+		return fmt.Errorf("Error reading session cookie: %v", err)
 	}
 
-	return &session, nil
+	return nil
 }
 
-func (s *Store) setSession(w http.ResponseWriter, session *Session) error {
-	value, err := s.toCookieValue(session)
+func (s *Store) setSession(w http.ResponseWriter, src interface{}) error {
+	value, err := s.toCookieValue(src)
 	if err != nil {
 		return fmt.Errorf("Error writing session cookie: %v", err)
 	}
