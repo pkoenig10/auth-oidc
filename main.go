@@ -84,20 +84,20 @@ func main() {
 
 // LoginSession is the login session information.
 type LoginSession struct {
-	Redirect string `json:"redirect,omitempty"`
-	State    string `json:"state,omitempty"`
-	Nonce    string `json:"nonce,omitempty"`
+	Redirect string `json:"r,omitempty"`
+	State    string `json:"s,omitempty"`
+	Nonce    string `json:"n,omitempty"`
 }
 
 // Session is the session information.
 type Session struct {
-	Email        string    `json:"email,omitempty"`
-	Expiry       time.Time `json:"expiry,omitempty"`
-	RefreshToken string    `json:"refresh_token,omitempty"`
+	Email        string `json:"e,omitempty"`
+	Expiry       int64  `json:"x,omitempty"`
+	RefreshToken string `json:"r,omitempty"`
 }
 
-func (s *Session) isExpired() bool {
-	return !time.Now().Before(s.Expiry)
+func (s *Session) isValid() bool {
+	return time.Now().Unix() < s.Expiry
 }
 
 // Server is the authentication and authorization server.
@@ -156,7 +156,7 @@ func (s *Server) HandleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if session.isExpired() {
+	if !session.isValid() {
 		err := s.refreshToken(r.Context(), w, &session)
 		if err != nil {
 			err = fmt.Errorf("Error refreshing token: %v", err)
@@ -273,7 +273,7 @@ func (s *Server) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 	session := Session{
 		Email:        email,
-		Expiry:       idToken.Expiry,
+		Expiry:       idToken.Expiry.Unix(),
 		RefreshToken: token.RefreshToken,
 	}
 	err = s.store.setSession(w, &session)
@@ -327,7 +327,7 @@ func (s *Server) refreshToken(ctx context.Context, w http.ResponseWriter, sessio
 
 	*session = Session{
 		Email:        email,
-		Expiry:       idToken.Expiry,
+		Expiry:       idToken.Expiry.Unix(),
 		RefreshToken: token.RefreshToken,
 	}
 	err = s.store.setSession(w, session)
