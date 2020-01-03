@@ -28,8 +28,8 @@ const (
 	// ScopeEmail is the scope to request access to the email and email_verified claims.
 	ScopeEmail = "email"
 
-	// HeaderXAuthRequestEmail is the response header containing the user's email address.
-	HeaderXAuthRequestEmail = "X-Auth-Request-Email"
+	// HeaderXEmail is the response header containing the user's email address.
+	HeaderXEmail = "X-Email"
 )
 
 const (
@@ -50,27 +50,36 @@ const (
 )
 
 var (
-	httpAddress = flag.String("http-address", ":4180", "")
+	httpAddress = flag.String("http-address", ":80", "The address on which to listen for requests")
 
-	issuerURL    = flag.String("issuer-url", IssuerURLGoogle, "")
-	clientID     = flag.String("client-id", "", "")
-	clientSecret = flag.String("client-secret", "", "")
+	issuerURL    = flag.String("issuer-url", IssuerURLGoogle, "The OpenID Connect issuer URL")
+	redirectURL  = flag.String("redirect-url", "", "The OAuth2 redirect URL, which is the URL of this server")
+	clientID     = flag.String("client-id", "", "The OAuth2 client ID")
+	clientSecret = flag.String("client-secret", "", "The OAuth2 client secret")
 
-	cookieKey      = flag.String("cookie-key", "", "")
-	cookieName     = flag.String("cookie-name", "_oidc", "")
-	cookieDomain   = flag.String("cookie-domain", "", "")
-	cookiePath     = flag.String("cookie-path", "/", "")
-	cookieMaxAge   = flag.Duration("cookie-max-age", 0, "")
-	cookieSecure   = flag.Bool("cookie-secure", true, "")
-	cookieHTTPOnly = flag.Bool("cookie-http-only", true, "")
+	cookieKey      = flag.String("cookie-key", "", "The cookie encryption key")
+	cookieName     = flag.String("cookie-name", "_oidc", "The cookie name")
+	cookieDomain   = flag.String("cookie-domain", "", "The cookie Domain attribute")
+	cookiePath     = flag.String("cookie-path", "/", "The cookie Path attribute")
+	cookieMaxAge   = flag.Duration("cookie-max-age", 0, "The cookie Max-Age attribute")
+	cookieSecure   = flag.Bool("cookie-secure", true, "The cookie Secure attribute")
+	cookieHTTPOnly = flag.Bool("cookie-http-only", true, "The cookie HttpOnly attribute")
 
-	redirectURL = flag.String("redirect-url", "", "")
-
-	usersFile = flag.String("users-file", "", "")
+	usersFile = flag.String("users-file", "", "The users configuration file")
 )
 
 func main() {
 	flag.Parse()
+
+	if *redirectURL == "" {
+		log.Fatalf("Redirect URL is not configured")
+	}
+	if *clientID == "" {
+		log.Fatalf("Client ID is not configured")
+	}
+	if *clientSecret == "" {
+		log.Fatalf("Client secret is not configured")
+	}
 
 	s := newServer()
 
@@ -123,7 +132,7 @@ func newServer() *Server {
 	oauth2Config := &oauth2.Config{
 		ClientID:     *clientID,
 		ClientSecret: *clientSecret,
-		RedirectURL:  *redirectURL + callbackPath,
+		RedirectURL:  strings.TrimSuffix(*redirectURL, "/") + callbackPath,
 		Endpoint:     provider.Endpoint(),
 		Scopes:       scopes(),
 	}
@@ -172,7 +181,7 @@ func (s *Server) HandleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set(HeaderXAuthRequestEmail, session.Email)
+	w.Header().Set(HeaderXEmail, session.Email)
 	w.WriteHeader(http.StatusOK)
 }
 

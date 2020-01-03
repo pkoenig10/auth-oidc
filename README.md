@@ -4,4 +4,83 @@
 
 [![Docker Build Status](https://img.shields.io/docker/cloud/build/pkoenig10/oidc-rp.svg)][hub] [![Docker Automated Build](https://img.shields.io/docker/cloud/automated/pkoenig10/oidc-rp.svg)][hub] [![Docker Pulls](https://img.shields.io/docker/pulls/pkoenig10/oidc-rp.svg)][hub] [![Docker Stars](https://img.shields.io/docker/stars/pkoenig10/oidc-rp.svg)][hub]
 
-**oidc-rp** is authenication/authorization server that acts as an [OpenID Connect](https://openid.net/connect/) Relying Party and can be used with the [NGINX](https://www.nginx.com/) [auth_request module](http://nginx.org/en/docs/http/ngx_http_auth_request_module.html).
+An [OpenID Connect](https://openid.net/connect/) Relying Party server that can be used with the [NGINX](https://www.nginx.com/) [auth_request module](http://nginx.org/en/docs/http/ngx_http_auth_request_module.html).
+
+Users are authenticated using the configured OpenID Provider and authorized using the configured [users file](#users-file).
+Authentication information is stored in an encrypted cookie.
+
+## Endpoints
+
+- #### `/auth`
+
+	Performs authentication and authorization. The user's email address is returned in the `X-Email` response header.
+
+    **Query parameters:**
+
+    | Name | Required | Description |
+    | :-: | :-: | :- |
+    | `g` | Yes | The group name to use for authorization. Group membership is configured in the [users file](#users-file). |
+
+    **Status codes:**
+
+    | Status | Description |
+    | :-: | :- |
+    | 200 | The user is authenticated and authorized. |
+    | 401 | The user is not authenticated. The user should be redirected to the login endpoint. |
+    | 403 | The user is authenticated but not authorized. This indicates that the user is not a member of the given group. |
+
+- #### `/login`
+
+    Starts the [OpenID Connect Authorization Code Flow](https://openid.net/specs/openid-connect-core-1_0.html#CodeFlowAuth).
+
+    **Query parameters:**
+
+    | Name | Required | Description |
+    | :-: | :-: | :- |
+    | `rd` | No | The redirect URL to redirect to after a successful login. |
+
+    **Status codes:**
+
+    | Status | Description |
+    | :-: | :- |
+    | 302 | Redirects to the [OpenID Provider Authorization Endpoint](https://openid.net/specs/openid-connect-core-1_0.html#AuthorizationEndpoint). |
+
+- #### `/logout`
+
+    Performs logout.
+
+    **Status codes:**
+
+    | Status | Description |
+    | :-: | :- |
+    | 200 | The user was successfully logged out. |
+
+- #### `/callback`
+
+    Completes the [OpenID Connect Authorization Code Flow](https://openid.net/specs/openid-connect-core-1_0.html#CodeFlowAuth). The OpenID Provider should be configured with this endpoint as the callback URL.
+
+    **Status codes:**
+
+    | Status | Description |
+    | :-: | :- |
+    | 200 | The user was successfully logged in and no redirect URL was given. |
+    | 302 | The user was successfully logged in and redirects to the given redirect URL. |
+    | 400 | The request was invalid. |
+
+## Configuration
+
+The server is configured using command-line flags. Detailed usage information is available using the `-help` flag.
+
+### Users file
+
+Authorization is performed by checking whether the user is a member of the given group. Group membership is configured using a YAML users file that maps group names to a list of email addresses of users in that group.
+
+##### Example
+
+```
+group1:
+  - user1@example.com
+group2:
+  - user1@example.com
+  - user2@example.com
+```
