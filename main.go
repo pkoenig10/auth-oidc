@@ -14,6 +14,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc"
@@ -111,30 +112,15 @@ func (s *Session) isValid() bool {
 
 // Server is the authentication and authorization server.
 type Server struct {
-	provider     *oidc.Provider
-	verifier     *oidc.IDTokenVerifier
-	oauth2Config *oauth2.Config
-	store        *Store
-	users        map[string]map[string]bool
+	provider *Provider
+	store    *Store
+	users    *Users
 }
 
 func newServer() *Server {
-	provider, err := oidc.NewProvider(context.Background(), *issuerURL)
+	provider, err := newProvider()
 	if err != nil {
-		log.Fatalf("Error creating provider: %v", err)
-	}
-
-	oidcCondig := oidc.Config{
-		ClientID: *clientID,
-	}
-	verifier := provider.Verifier(&oidcCondig)
-
-	oauth2Config := &oauth2.Config{
-		ClientID:     *clientID,
-		ClientSecret: *clientSecret,
-		RedirectURL:  strings.TrimSuffix(*redirectURL, "/") + callbackPath,
-		Endpoint:     provider.Endpoint(),
-		Scopes:       scopes(),
+		log.Fatalf("Error creating token service: %v", err)
 	}
 
 	store, err := newStore()
@@ -142,17 +128,15 @@ func newServer() *Server {
 		log.Fatalf("Error creating store: %v", err)
 	}
 
-	users, err := readUsers()
+	users, err := newUsers()
 	if err != nil {
 		log.Fatalf("Error reading users files: %v", err)
 	}
 
 	return &Server{
-		provider:     provider,
-		verifier:     verifier,
-		oauth2Config: oauth2Config,
-		store:        store,
-		users:        users,
+		provider: provider,
+		store:    store,
+		users:    users,
 	}
 }
 
@@ -166,17 +150,23 @@ func (s *Server) HandleAuth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !session.isValid() {
-		err := s.refreshToken(r.Context(), w, &session)
+		session, err := s.provider.refreshToken(r.Context(), session.RefreshToken)
 		if err != nil {
 			err = fmt.Errorf("Error refreshing token: %v", err)
 			s.handleError(w, err, http.StatusUnauthorized)
+			return
+		}
+
+		err = s.store.setSession(w, &session)
+		if err != nil {
+			s.handleError(w, err, http.StatusInternalServerError)
 			return
 		}
 	}
 
 	group := strings.ToLower(r.URL.Query().Get(groupKey))
 	email := strings.ToLower(session.Email)
-	if !s.users[group][email] {
+	if !s.users.isAllowed(group, email) {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
@@ -214,9 +204,7 @@ func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authCodeURL := s.oauth2Config.AuthCodeURL(
-		state,
-		authCodeOptions(nonce)...)
+	authCodeURL := s.provider.authCodeURL(state, nonce)
 	http.Redirect(w, r, authCodeURL, http.StatusFound)
 }
 
@@ -238,121 +226,183 @@ func (s *Server) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	var loginSession LoginSession
 	err := s.store.getSession(r, &loginSession)
 	if err != nil {
-		err := fmt.Errorf("Invalid session: %v", err)
+		err = fmt.Errorf("Invalid session: %v", err)
 		s.handleError(w, err, http.StatusBadRequest)
 		return
 	}
 
-	redirect := loginSession.Redirect
-
 	state := r.URL.Query().Get(stateKey)
 	if state != loginSession.State {
-		err := fmt.Errorf("Invalid state")
+		err = fmt.Errorf("Invalid state")
 		s.handleError(w, err, http.StatusBadRequest)
 		return
 	}
 
 	code := r.URL.Query().Get(codeKey)
-	token, err := s.exchangeToken(r.Context(), code)
+	session, err := s.provider.exchangeCode(r.Context(), code, loginSession.Nonce)
 	if err != nil {
-		err := fmt.Errorf("Error exchanging token: %v", err)
+		err = fmt.Errorf("Error exchanging code: %v", err)
 		s.handleError(w, err, http.StatusBadRequest)
 		return
 	}
 
-	idToken, err := s.verifyToken(r.Context(), token)
-	if err != nil {
-		err := fmt.Errorf("Error verifying token: %v", err)
-		s.handleError(w, err, http.StatusBadRequest)
-		return
-	}
-
-	if idToken.Nonce != loginSession.Nonce {
-		err := fmt.Errorf("Invalid nonce")
-		s.handleError(w, err, http.StatusBadRequest)
-		return
-	}
-
-	email, err := getEmail(idToken)
-	if err != nil {
-		err := fmt.Errorf("Error reading email from token: %v", err)
-		s.handleError(w, err, http.StatusBadRequest)
-		return
-	}
-
-	session := Session{
-		Email:        email,
-		Expiry:       idToken.Expiry.Unix(),
-		RefreshToken: token.RefreshToken,
-	}
 	err = s.store.setSession(w, &session)
 	if err != nil {
 		s.handleError(w, err, http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Created session for %v", email)
-
-	if redirect != "" {
-		http.Redirect(w, r, redirect, http.StatusFound)
+	if loginSession.Redirect != "" {
+		http.Redirect(w, r, loginSession.Redirect, http.StatusFound)
 	} else {
 		w.WriteHeader(http.StatusOK)
 	}
 }
 
-func (s *Server) exchangeToken(ctx context.Context, code string) (*oauth2.Token, error) {
-	return s.oauth2Config.Exchange(ctx, code)
+func (s *Server) handleError(w http.ResponseWriter, err error, code int) {
+	log.Print(err)
+	s.store.clearSession(w)
+	http.Error(w, err.Error(), code)
 }
 
-func (s *Server) verifyToken(ctx context.Context, token *oauth2.Token) (*oidc.IDToken, error) {
-	idToken, ok := token.Extra(idTokenKey).(string)
+// Provider is the token provider.
+type Provider struct {
+	config   *oauth2.Config
+	verifier *oidc.IDTokenVerifier
+	cache    map[string]func() (Session, error)
+	mutex    sync.Mutex
+}
+
+func newProvider() (*Provider, error) {
+	provider, err := oidc.NewProvider(context.Background(), *issuerURL)
+	if err != nil {
+		return nil, fmt.Errorf("Error creating provider: %v", err)
+	}
+
+	config := &oauth2.Config{
+		ClientID:     *clientID,
+		ClientSecret: *clientSecret,
+		RedirectURL:  strings.TrimSuffix(*redirectURL, "/") + callbackPath,
+		Endpoint:     provider.Endpoint(),
+		Scopes:       scopes(),
+	}
+
+	verifier := provider.Verifier(&oidc.Config{
+		ClientID: *clientID,
+	})
+
+	return &Provider{
+		config:   config,
+		verifier: verifier,
+		cache:    make(map[string]func() (Session, error)),
+	}, nil
+}
+
+func (p *Provider) authCodeURL(state string, nonce string) string {
+	return p.config.AuthCodeURL(
+		state,
+		authCodeOptions(nonce)...)
+}
+
+func (p *Provider) exchangeCode(ctx context.Context, code string, nonce string) (Session, error) {
+	token, err := p.config.Exchange(ctx, code)
+	if err != nil {
+		return Session{}, fmt.Errorf("Error exchanging code: %v", err)
+	}
+
+	idTokenValue, ok := token.Extra(idTokenKey).(string)
 	if !ok {
-		return nil, fmt.Errorf("ID token is not present")
+		return Session{}, fmt.Errorf("ID token is not present")
 	}
 
-	return s.verifier.Verify(ctx, idToken)
-}
-
-func (s *Server) refreshToken(ctx context.Context, w http.ResponseWriter, session *Session) error {
-	token := &oauth2.Token{
-		RefreshToken: session.RefreshToken,
-	}
-	tokenSource := s.oauth2Config.TokenSource(ctx, token)
-
-	token, err := tokenSource.Token()
+	idToken, err := p.verifier.Verify(ctx, idTokenValue)
 	if err != nil {
-		return fmt.Errorf("Error refreshing token: %v", err)
+		return Session{}, fmt.Errorf("Error verifying token: %v", err)
 	}
 
-	idToken, err := s.verifyToken(ctx, token)
-	if err != nil {
-		return fmt.Errorf("Error verifying refreshed token: %v", err)
+	if idToken.Nonce != nonce {
+		return Session{}, fmt.Errorf("Invalid nonce")
 	}
 
 	email, err := getEmail(idToken)
 	if err != nil {
-		return fmt.Errorf("Error reading email from refreshed token: %v", err)
+		return Session{}, fmt.Errorf("Error reading email from token: %v", err)
 	}
 
-	*session = Session{
+	log.Printf("Created session for %v", email)
+
+	return Session{
 		Email:        email,
 		Expiry:       idToken.Expiry.Unix(),
 		RefreshToken: token.RefreshToken,
+	}, nil
+}
+
+func (p *Provider) refreshToken(ctx context.Context, refreshToken string) (Session, error) {
+	p.mutex.Lock()
+
+	future, ok := p.cache[refreshToken]
+	if !ok {
+		var session Session
+		var err error
+		done := make(chan struct{})
+
+		future = func() (Session, error) {
+			<-done
+			return session, err
+		}
+		p.cache[refreshToken] = future
+
+		go func() {
+			session, err = p.exchangeRefreshToken(ctx, refreshToken)
+			close(done)
+
+			time.Sleep(time.Minute)
+
+			p.mutex.Lock()
+			delete(p.cache, refreshToken)
+			p.mutex.Unlock()
+		}()
 	}
-	err = s.store.setSession(w, session)
+
+	p.mutex.Unlock()
+
+	return future()
+}
+
+func (p *Provider) exchangeRefreshToken(ctx context.Context, refreshToken string) (Session, error) {
+	token := &oauth2.Token{
+		RefreshToken: refreshToken,
+	}
+	tokenSource := p.config.TokenSource(ctx, token)
+
+	token, err := tokenSource.Token()
 	if err != nil {
-		return err
+		return Session{}, fmt.Errorf("Error refreshing token: %v", err)
+	}
+
+	idTokenValue, ok := token.Extra(idTokenKey).(string)
+	if !ok {
+		return Session{}, fmt.Errorf("ID token is not present")
+	}
+
+	idToken, err := p.verifier.Verify(ctx, idTokenValue)
+	if err != nil {
+		return Session{}, fmt.Errorf("Error verifying token: %v", err)
+	}
+
+	email, err := getEmail(idToken)
+	if err != nil {
+		return Session{}, fmt.Errorf("Error reading email from ID token: %v", err)
 	}
 
 	log.Printf("Refreshed session for %v", email)
 
-	return nil
-}
-
-func (s *Server) handleError(w http.ResponseWriter, err error, code int) {
-	log.Println(err)
-	s.store.clearSession(w)
-	http.Error(w, err.Error(), code)
+	return Session{
+		Email:        email,
+		Expiry:       idToken.Expiry.Unix(),
+		RefreshToken: token.RefreshToken,
+	}, nil
 }
 
 // Store is the session store.
@@ -486,7 +536,12 @@ func (s *Store) decrypt(value []byte) ([]byte, error) {
 	return decrypted, nil
 }
 
-func readUsers() (map[string]map[string]bool, error) {
+// Users is the users.
+type Users struct {
+	users map[string][]string
+}
+
+func newUsers() (*Users, error) {
 	file, err := ioutil.ReadFile(*usersFile)
 	if err != nil {
 		return nil, fmt.Errorf("Error reading users file %v: %v", *usersFile, err)
@@ -494,21 +549,25 @@ func readUsers() (map[string]map[string]bool, error) {
 
 	file = bytes.ToLower(file)
 
-	var data map[string][]string
-	err = yaml.Unmarshal(file, &data)
+	var users map[string][]string
+	err = yaml.Unmarshal(file, &users)
 	if err != nil {
 		return nil, fmt.Errorf("Error parsing users file %v: %v", *usersFile, err)
 	}
 
-	users := make(map[string]map[string]bool)
-	for group, emails := range data {
-		users[group] = make(map[string]bool)
-		for _, email := range emails {
-			users[group][email] = true
+	return &Users{
+		users,
+	}, nil
+}
+
+func (u *Users) isAllowed(group string, user string) bool {
+	for _, groupUser := range u.users[group] {
+		if user == groupUser {
+			return true
 		}
 	}
 
-	return users, nil
+	return false
 }
 
 func getEmail(idToken *oidc.IDToken) (string, error) {
@@ -516,6 +575,7 @@ func getEmail(idToken *oidc.IDToken) (string, error) {
 		Email    string `json:"email"`
 		Verified bool   `json:"email_verified"`
 	}
+
 	err := idToken.Claims(&claims)
 	if err != nil {
 		return "", fmt.Errorf("Error reading claims from token: %v", err)
