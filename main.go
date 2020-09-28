@@ -164,9 +164,8 @@ func (s *Server) HandleAuth(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	group := strings.ToLower(r.URL.Query().Get(groupKey))
-	email := strings.ToLower(session.Email)
-	if !s.users.isAllowed(group, email) {
+	group := r.URL.Query().Get(groupKey)
+	if !s.users.isAllowed(group, session.Email) {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
@@ -542,6 +541,10 @@ type Users struct {
 }
 
 func newUsers() (*Users, error) {
+	if *usersFile == "" {
+		return &Users{}, nil
+	}
+
 	file, err := ioutil.ReadFile(*usersFile)
 	if err != nil {
 		return nil, fmt.Errorf("Error reading users file %v: %v", *usersFile, err)
@@ -561,6 +564,13 @@ func newUsers() (*Users, error) {
 }
 
 func (u *Users) isAllowed(group string, user string) bool {
+	if u.users == nil {
+		return true
+	}
+
+	group = strings.ToLower(group)
+	user = strings.ToLower(user)
+
 	for _, groupUser := range u.users[group] {
 		if user == groupUser {
 			return true
