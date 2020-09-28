@@ -54,7 +54,7 @@ var (
 	httpAddress = flag.String("http-address", ":80", "The address on which to listen for requests")
 
 	issuerURL    = flag.String("issuer-url", IssuerURLGoogle, "The OpenID Connect issuer URL")
-	redirectURL  = flag.String("redirect-url", "", "The OAuth2 redirect URL, which is the URL of this server")
+	externalURL  = flag.String("external-url", "", "The external URL of this server")
 	clientID     = flag.String("client-id", "", "The OAuth2 client ID")
 	clientSecret = flag.String("client-secret", "", "The OAuth2 client secret")
 
@@ -72,8 +72,8 @@ var (
 func main() {
 	flag.Parse()
 
-	if *redirectURL == "" {
-		log.Fatalf("Redirect URL is not configured")
+	if *externalURL == "" {
+		log.Fatalf("External URL is not configured")
 	}
 	if *clientID == "" {
 		log.Fatalf("Client ID is not configured")
@@ -84,10 +84,10 @@ func main() {
 
 	s := newServer()
 
-	http.HandleFunc(authPath, s.HandleAuth)
-	http.HandleFunc(loginPath, s.HandleLogin)
-	http.HandleFunc(logoutPath, s.HandleLogout)
-	http.HandleFunc(callbackPath, s.HandleCallback)
+	http.HandleFunc(authPath, s.handleAuth)
+	http.HandleFunc(loginPath, s.handleLogin)
+	http.HandleFunc(logoutPath, s.handleLogout)
+	http.HandleFunc(callbackPath, s.handleCallback)
 
 	log.Fatal(http.ListenAndServe(*httpAddress, nil))
 }
@@ -140,8 +140,9 @@ func newServer() *Server {
 	}
 }
 
-// HandleAuth handles authentication.
-func (s *Server) HandleAuth(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
+	group := r.URL.Query().Get(groupKey)
+
 	var session Session
 	err := s.store.getSession(r, &session)
 	if err != nil {
@@ -164,7 +165,6 @@ func (s *Server) HandleAuth(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	group := r.URL.Query().Get(groupKey)
 	if !s.users.isAllowed(group, session.Email) {
 		w.WriteHeader(http.StatusForbidden)
 		return
@@ -174,8 +174,7 @@ func (s *Server) HandleAuth(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// HandleLogin handles login.
-func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	redirect := r.URL.Query().Get(redirectKey)
 
 	state, err := randomString(12)
@@ -207,8 +206,7 @@ func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, authCodeURL, http.StatusFound)
 }
 
-// HandleLogout handles logout.
-func (s *Server) HandleLogout(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	var session Session
 	err := s.store.getSession(r, &session)
 
@@ -220,8 +218,10 @@ func (s *Server) HandleLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// HandleCallback handles the callback.
-func (s *Server) HandleCallback(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get(codeKey)
+	state := r.URL.Query().Get(stateKey)
+
 	var loginSession LoginSession
 	err := s.store.getSession(r, &loginSession)
 	if err != nil {
@@ -230,14 +230,12 @@ func (s *Server) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	state := r.URL.Query().Get(stateKey)
 	if state != loginSession.State {
 		err = fmt.Errorf("Invalid state")
 		s.handleError(w, err, http.StatusBadRequest)
 		return
 	}
 
-	code := r.URL.Query().Get(codeKey)
 	session, err := s.provider.exchangeCode(r.Context(), code, loginSession.Nonce)
 	if err != nil {
 		err = fmt.Errorf("Error exchanging code: %v", err)
@@ -281,7 +279,7 @@ func newProvider() (*Provider, error) {
 	config := &oauth2.Config{
 		ClientID:     *clientID,
 		ClientSecret: *clientSecret,
-		RedirectURL:  strings.TrimSuffix(*redirectURL, "/") + callbackPath,
+		RedirectURL:  strings.TrimSuffix(*externalURL, "/") + callbackPath,
 		Endpoint:     provider.Endpoint(),
 		Scopes:       scopes(),
 	}
