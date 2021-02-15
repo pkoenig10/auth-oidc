@@ -1,0 +1,30 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  release:
+    name: Docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/setup-buildx-action@v1
+      - uses: docker/login-action@v1
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/login-action@v1
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.CR_PAT }}
+      - uses: docker/build-push-action@v2
+        with:
+          push: true
+          tags: |
+            pkoenig10/oidc-rp:latest
+            pkoenig10/oidc-rp:${{ github.sha }}
+            ghcr.io/pkoenig10/oidc-rp:latest
+            ghcr.io/pkoenig10/oidc-rp:${{ github.sha }}

@@ -1,8 +1,7 @@
-[hub]: https://hub.docker.com/r/pkoenig10/oidc-rp
-
 # oidc-rp
 
-[![Docker Build Status](https://img.shields.io/docker/cloud/build/pkoenig10/oidc-rp.svg)][hub] [![Docker Automated Build](https://img.shields.io/docker/cloud/automated/pkoenig10/oidc-rp.svg)][hub] [![Docker Pulls](https://img.shields.io/docker/pulls/pkoenig10/oidc-rp.svg)][hub] [![Docker Stars](https://img.shields.io/docker/stars/pkoenig10/oidc-rp.svg)][hub]
+[![](https://img.shields.io/github/workflow/status/pkoenig10/oidc-rp/CI?label=ci)][actions]
+[![](https://img.shields.io/github/workflow/status/pkoenig10/oidc-rp/Release?label=release)][actions]
 
 An [OpenID Connect](https://openid.net/connect/) Relying Party server that can be used with the [NGINX](https://www.nginx.com/) [auth_request module](http://nginx.org/en/docs/http/ngx_http_auth_request_module.html).
 
@@ -84,3 +83,5 @@ group2:
   - user1@example.com
   - user2@example.com
 ```
+
+[actions]: https://github.com/pkoenig10/oidc-rp/actions
