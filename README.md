@@ -18,7 +18,7 @@ Authentication information is stored in an encrypted cookie.
 
     | Name | Required | Description |
     | :-: | :-: | :- |
-    | `g` | Yes | The group name to use for authorization. Group membership is configured in the [users file](#users-file). |
+    | `g` | No | The group name to use for authorization. Group membership is configured in the [users file](#users-file). |
 
     **Status codes:**
 
@@ -74,9 +74,11 @@ The server is configured using command-line flags. Detailed usage information is
 
 Authorization is performed by checking whether the user is a member of the given group. Group membership is configured using a YAML users file that maps group names to a list of email addresses of users in that group.
 
+If the users file is not configured, then the group parameter will be ignored and all users will be considered authorized.
+
 ##### Example
 
-```
+```yaml
 group1:
   - user1@example.com
 group2:
