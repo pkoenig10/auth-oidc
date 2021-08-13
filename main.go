@@ -404,7 +404,7 @@ func (p *Provider) exchangeRefreshToken(ctx context.Context, refreshToken string
 
 // Store is the session store.
 type Store struct {
-	block cipher.Block
+	aead cipher.AEAD
 }
 
 func newStore() (*Store, error) {
@@ -414,8 +414,13 @@ func newStore() (*Store, error) {
 		return nil, fmt.Errorf("Error creating cipher: %v", err)
 	}
 
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("Error creating AEAD: %v", err)
+	}
+
 	return &Store{
-		block: block,
+		aead: aead,
 	}, nil
 }
 
@@ -501,31 +506,21 @@ func (s *Store) fromCookieValue(src string, dst interface{}) error {
 }
 
 func (s *Store) encrypt(value []byte) ([]byte, error) {
-	aead, err := cipher.NewGCM(s.block)
+	nonce, err := randomBytes(s.aead.NonceSize())
 	if err != nil {
 		return nil, err
 	}
 
-	nonce, err := randomBytes(aead.NonceSize())
-	if err != nil {
-		return nil, err
-	}
-
-	encrypted := aead.Seal(nil, nonce, value, nil)
+	encrypted := s.aead.Seal(nil, nonce, value, nil)
 
 	return append(nonce, encrypted...), nil
 }
 
 func (s *Store) decrypt(value []byte) ([]byte, error) {
-	aead, err := cipher.NewGCM(s.block)
-	if err != nil {
-		return nil, err
-	}
+	nonce := value[:s.aead.NonceSize()]
+	encrypted := value[s.aead.NonceSize():]
 
-	nonce := value[:aead.NonceSize()]
-	encrypted := value[aead.NonceSize():]
-
-	decrypted, err := aead.Open(nil, nonce, encrypted, nil)
+	decrypted, err := s.aead.Open(nil, nonce, encrypted, nil)
 	if err != nil {
 		return nil, err
 	}
