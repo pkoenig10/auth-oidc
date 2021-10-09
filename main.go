@@ -483,11 +483,11 @@ func (s *Store) toCookieValue(src interface{}) (string, error) {
 
 	encoded := encode(encrypted)
 
-	return string(encoded), nil
+	return encoded, nil
 }
 
 func (s *Store) fromCookieValue(src string, dst interface{}) error {
-	decoded, err := decode([]byte(src))
+	decoded, err := decode(src)
 	if err != nil {
 		return err
 	}
@@ -615,20 +615,12 @@ func deserialize(src []byte, dst interface{}) error {
 	return json.Unmarshal(src, dst)
 }
 
-func encode(value []byte) []byte {
-	encoded := make([]byte, base64.RawURLEncoding.EncodedLen(len(value)))
-	base64.RawURLEncoding.Encode(encoded, value)
-	return encoded
+func encode(value []byte) string {
+	return base64.RawURLEncoding.EncodeToString(value)
 }
 
-func decode(value []byte) ([]byte, error) {
-	decoded := make([]byte, base64.RawURLEncoding.DecodedLen(len(value)))
-	n, err := base64.RawURLEncoding.Decode(decoded, value)
-	if err != nil {
-		return nil, err
-	}
-
-	return decoded[:n], nil
+func decode(value string) ([]byte, error) {
+	return base64.RawURLEncoding.DecodeString(value)
 }
 
 func randomString(size int) (string, error) {
@@ -637,7 +629,7 @@ func randomString(size int) (string, error) {
 		return "", err
 	}
 
-	return string(encode(bytes)), nil
+	return encode(bytes), nil
 }
 
 func randomBytes(size int) ([]byte, error) {
