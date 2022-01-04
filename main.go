@@ -10,6 +10,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -139,6 +140,13 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	redirect := r.URL.Query().Get(redirectKey)
 
+	err := verifyRedirect(redirect)
+	if err != nil {
+		err = fmt.Errorf("Error verifying redirect URL: %v", err)
+		s.handleError(w, err, http.StatusBadRequest)
+		return
+	}
+
 	state, err := randomString(12)
 	if err != nil {
 		err = fmt.Errorf("Error creating state: %v", err)
@@ -169,7 +177,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	claims, err := s.store.getSession(r)
 
 	if err == nil {
-		log.Printf("Logout for %v", claims.Subject)
+		log.Printf("Logout for '%v'", claims.Subject)
 	}
 
 	s.store.clearSession(w)
@@ -285,14 +293,19 @@ func (p *Provider) exchangeCode(ctx context.Context, code string, nonce string) 
 		return "", fmt.Errorf("Invalid nonce")
 	}
 
-	email, err := getEmail(idToken)
+	var userInfo oidc.UserInfo
+	err = idToken.Claims(&userInfo)
 	if err != nil {
-		return "", fmt.Errorf("Error reading email from token: %v", err)
+		return "", fmt.Errorf("Error reading claims from token: %v", err)
 	}
 
-	log.Printf("Created session for %v", email)
+	if !userInfo.EmailVerified {
+		return "", fmt.Errorf("Email '%v' is not verified", userInfo.Email)
+	}
 
-	return email, nil
+	log.Printf("Created session for '%v'", userInfo.Email)
+
+	return userInfo.Email, nil
 }
 
 // Store is the session store.
@@ -356,7 +369,7 @@ func newUsers() (*Users, error) {
 
 	file, err := ioutil.ReadFile(*usersFile)
 	if err != nil {
-		return nil, fmt.Errorf("Error reading users file %v: %v", *usersFile, err)
+		return nil, fmt.Errorf("Error reading users file '%v': %v", *usersFile, err)
 	}
 
 	file = bytes.ToLower(file)
@@ -364,7 +377,7 @@ func newUsers() (*Users, error) {
 	var users map[string][]string
 	err = yaml.Unmarshal(file, &users)
 	if err != nil {
-		return nil, fmt.Errorf("Error parsing users file %v: %v", *usersFile, err)
+		return nil, fmt.Errorf("Error parsing users file '%v': %v", *usersFile, err)
 	}
 
 	return &Users{
@@ -433,18 +446,25 @@ func (c Claims) isFresh() bool {
 	return time.Now().Before(c.IssuedAt.Time.Add(*tokenRefresh))
 }
 
-func getEmail(idToken *oidc.IDToken) (string, error) {
-	var userInfo oidc.UserInfo
-	err := idToken.Claims(&userInfo)
+func verifyRedirect(redirect string) error {
+	redirectURL, err := url.Parse(redirect)
 	if err != nil {
-		return "", fmt.Errorf("Error reading claims from token: %v", err)
+		return fmt.Errorf("Error parsing redirect URL '%v'", redirect)
 	}
 
-	if !userInfo.EmailVerified {
-		return "", fmt.Errorf("Email is not verified: %v", userInfo.Email)
+	if !isValidRedirectHost(redirectURL) {
+		return fmt.Errorf("Invalid host in redirect URL '%v'", redirect)
 	}
 
-	return userInfo.Email, nil
+	return nil
+}
+
+func isValidRedirectHost(redirect *url.URL) bool {
+	if *cookieDomain == "" {
+		return redirect.Host == ""
+	} else {
+		return redirect.Host == *cookieDomain || strings.HasSuffix(redirect.Host, "."+*cookieDomain)
+	}
 }
 
 func setCookie(w http.ResponseWriter, value string, maxAge int) {
