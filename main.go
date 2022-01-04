@@ -3,34 +3,20 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/golang-jwt/jwt/v4"
 	"golang.org/x/oauth2"
 	"gopkg.in/yaml.v3"
-)
-
-const (
-	// IssuerURLGoogle is the issuer URL for Google.
-	IssuerURLGoogle = "https://accounts.google.com"
-
-	// ScopeEmail is the scope to request access to the email and email_verified claims.
-	ScopeEmail = "email"
-
-	// HeaderXEmail is the response header containing the user's email address.
-	HeaderXEmail = "X-Email"
 )
 
 const (
@@ -53,18 +39,18 @@ const (
 var (
 	httpAddress = flag.String("http-address", ":80", "The address on which to listen for requests")
 
-	issuerURL    = flag.String("issuer-url", IssuerURLGoogle, "The OpenID Connect issuer URL")
+	issuerURL    = flag.String("issuer-url", "https://accounts.google.com", "The OpenID Connect issuer URL")
 	externalURL  = flag.String("external-url", "", "The external URL of this server")
 	clientID     = flag.String("client-id", "", "The OAuth2 client ID")
 	clientSecret = flag.String("client-secret", "", "The OAuth2 client secret")
 
-	cookieKey      = flag.String("cookie-key", "", "The cookie encryption key")
-	cookieName     = flag.String("cookie-name", "_oidc", "The cookie name")
-	cookieDomain   = flag.String("cookie-domain", "", "The cookie Domain attribute")
-	cookiePath     = flag.String("cookie-path", "/", "The cookie Path attribute")
-	cookieMaxAge   = flag.Duration("cookie-max-age", 0, "The cookie Max-Age attribute")
-	cookieSecure   = flag.Bool("cookie-secure", true, "The cookie Secure attribute")
-	cookieHTTPOnly = flag.Bool("cookie-http-only", true, "The cookie HttpOnly attribute")
+	tokenKey        = flag.String("token-key", "", "The JWT signing key")
+	tokenRefresh    = flag.Duration("token-refresh", time.Hour, "The JWT refresh duration")
+	tokenExpiration = flag.Duration("token-expiration", 30*24*time.Hour, "The JWT expiration duration")
+
+	cookieName   = flag.String("cookie-name", "_oidc", "The cookie name")
+	cookieDomain = flag.String("cookie-domain", "", "The cookie Domain attribute")
+	cookiePath   = flag.String("cookie-path", "/", "The cookie Path attribute")
 
 	usersFile = flag.String("users-file", "", "The users configuration file")
 )
@@ -90,24 +76,6 @@ func main() {
 	http.HandleFunc(callbackPath, s.handleCallback)
 
 	log.Fatal(http.ListenAndServe(*httpAddress, nil))
-}
-
-// LoginSession is the login session information.
-type LoginSession struct {
-	Redirect string `json:"r,omitempty"`
-	State    string `json:"s,omitempty"`
-	Nonce    string `json:"n,omitempty"`
-}
-
-// Session is the session information.
-type Session struct {
-	Email        string `json:"e,omitempty"`
-	Expiry       int64  `json:"x,omitempty"`
-	RefreshToken string `json:"r,omitempty"`
-}
-
-func (s *Session) isValid() bool {
-	return time.Now().Unix() < s.Expiry
 }
 
 // Server is the authentication and authorization server.
@@ -143,34 +111,28 @@ func newServer() *Server {
 func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 	group := r.URL.Query().Get(groupKey)
 
-	var session Session
-	err := s.store.getSession(r, &session)
-	if err != nil {
+	claims, err := s.store.getSession(r)
+	if err != nil || !claims.isAuthenticated() {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 
-	if !session.isValid() {
-		session, err := s.provider.refreshToken(r.Context(), session.RefreshToken)
-		if err != nil {
-			err = fmt.Errorf("Error refreshing token: %v", err)
-			s.handleError(w, err, http.StatusUnauthorized)
-			return
-		}
+	if !claims.isFresh() {
+		claims = newAuthenticatedClaims(claims.Subject)
 
-		err = s.store.setSession(w, &session)
+		err = s.store.setSession(w, claims)
 		if err != nil {
 			s.handleError(w, err, http.StatusInternalServerError)
 			return
 		}
 	}
 
-	if !s.users.isAllowed(group, session.Email) {
+	if !s.users.isAllowed(group, claims.Subject) {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
 
-	w.Header().Set(HeaderXEmail, session.Email)
+	w.Header().Set("X-Email", claims.Subject)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -191,12 +153,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	loginSession := LoginSession{
-		Redirect: redirect,
-		State:    state,
-		Nonce:    nonce,
-	}
-	err = s.store.setSession(w, &loginSession)
+	claims := newLoginClaims(state, nonce, redirect)
+
+	err = s.store.setSession(w, claims)
 	if err != nil {
 		s.handleError(w, err, http.StatusInternalServerError)
 		return
@@ -207,11 +166,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	var session Session
-	err := s.store.getSession(r, &session)
+	claims, err := s.store.getSession(r)
 
 	if err == nil {
-		log.Printf("Logout for %v", session.Email)
+		log.Printf("Logout for %v", claims.Subject)
 	}
 
 	s.store.clearSession(w)
@@ -222,35 +180,43 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get(codeKey)
 	state := r.URL.Query().Get(stateKey)
 
-	var loginSession LoginSession
-	err := s.store.getSession(r, &loginSession)
+	claims, err := s.store.getSession(r)
 	if err != nil {
 		err = fmt.Errorf("Invalid session: %v", err)
 		s.handleError(w, err, http.StatusBadRequest)
 		return
 	}
 
-	if state != loginSession.State {
+	if claims.isAuthenticated() {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if state != claims.State {
 		err = fmt.Errorf("Invalid state")
 		s.handleError(w, err, http.StatusBadRequest)
 		return
 	}
 
-	session, err := s.provider.exchangeCode(r.Context(), code, loginSession.Nonce)
+	redirect := claims.Redirect
+
+	subject, err := s.provider.exchangeCode(r.Context(), code, claims.Nonce)
 	if err != nil {
 		err = fmt.Errorf("Error exchanging code: %v", err)
 		s.handleError(w, err, http.StatusBadRequest)
 		return
 	}
 
-	err = s.store.setSession(w, &session)
+	claims = newAuthenticatedClaims(subject)
+
+	err = s.store.setSession(w, claims)
 	if err != nil {
 		s.handleError(w, err, http.StatusInternalServerError)
 		return
 	}
 
-	if loginSession.Redirect != "" {
-		http.Redirect(w, r, loginSession.Redirect, http.StatusFound)
+	if redirect != "" {
+		http.Redirect(w, r, redirect, http.StatusFound)
 	} else {
 		w.WriteHeader(http.StatusOK)
 	}
@@ -266,8 +232,6 @@ func (s *Server) handleError(w http.ResponseWriter, err error, code int) {
 type Provider struct {
 	config   *oauth2.Config
 	verifier *oidc.IDTokenVerifier
-	cache    map[string]func() (Session, error)
-	mutex    sync.Mutex
 }
 
 func newProvider() (*Provider, error) {
@@ -281,7 +245,7 @@ func newProvider() (*Provider, error) {
 		ClientSecret: *clientSecret,
 		RedirectURL:  strings.TrimSuffix(*externalURL, "/") + callbackPath,
 		Endpoint:     provider.Endpoint(),
-		Scopes:       scopes(),
+		Scopes:       []string{oidc.ScopeOpenID, "email"},
 	}
 
 	verifier := provider.Verifier(&oidc.Config{
@@ -291,241 +255,93 @@ func newProvider() (*Provider, error) {
 	return &Provider{
 		config:   config,
 		verifier: verifier,
-		cache:    make(map[string]func() (Session, error)),
 	}, nil
 }
 
 func (p *Provider) authCodeURL(state string, nonce string) string {
 	return p.config.AuthCodeURL(
 		state,
-		authCodeOptions(nonce)...)
+		oidc.Nonce(nonce),
+		oauth2.SetAuthURLParam("prompt", "select_account"))
 }
 
-func (p *Provider) exchangeCode(ctx context.Context, code string, nonce string) (Session, error) {
+func (p *Provider) exchangeCode(ctx context.Context, code string, nonce string) (string, error) {
 	token, err := p.config.Exchange(ctx, code)
 	if err != nil {
-		return Session{}, fmt.Errorf("Error exchanging code: %v", err)
+		return "", fmt.Errorf("Error exchanging code: %v", err)
 	}
 
 	idTokenValue, ok := token.Extra(idTokenKey).(string)
 	if !ok {
-		return Session{}, fmt.Errorf("ID token is not present")
+		return "", fmt.Errorf("ID token is not present")
 	}
 
 	idToken, err := p.verifier.Verify(ctx, idTokenValue)
 	if err != nil {
-		return Session{}, fmt.Errorf("Error verifying token: %v", err)
+		return "", fmt.Errorf("Error verifying token: %v", err)
 	}
 
 	if idToken.Nonce != nonce {
-		return Session{}, fmt.Errorf("Invalid nonce")
+		return "", fmt.Errorf("Invalid nonce")
 	}
 
 	email, err := getEmail(idToken)
 	if err != nil {
-		return Session{}, fmt.Errorf("Error reading email from token: %v", err)
+		return "", fmt.Errorf("Error reading email from token: %v", err)
 	}
 
 	log.Printf("Created session for %v", email)
 
-	return Session{
-		Email:        email,
-		Expiry:       idToken.Expiry.Unix(),
-		RefreshToken: token.RefreshToken,
-	}, nil
-}
-
-func (p *Provider) refreshToken(ctx context.Context, refreshToken string) (Session, error) {
-	p.mutex.Lock()
-
-	future, ok := p.cache[refreshToken]
-	if !ok {
-		var session Session
-		var err error
-		done := make(chan struct{})
-
-		future = func() (Session, error) {
-			<-done
-			return session, err
-		}
-		p.cache[refreshToken] = future
-
-		go func() {
-			session, err = p.exchangeRefreshToken(ctx, refreshToken)
-			close(done)
-
-			time.Sleep(time.Minute)
-
-			p.mutex.Lock()
-			delete(p.cache, refreshToken)
-			p.mutex.Unlock()
-		}()
-	}
-
-	p.mutex.Unlock()
-
-	return future()
-}
-
-func (p *Provider) exchangeRefreshToken(ctx context.Context, refreshToken string) (Session, error) {
-	token := &oauth2.Token{
-		RefreshToken: refreshToken,
-	}
-	tokenSource := p.config.TokenSource(ctx, token)
-
-	token, err := tokenSource.Token()
-	if err != nil {
-		return Session{}, fmt.Errorf("Error refreshing token: %v", err)
-	}
-
-	idTokenValue, ok := token.Extra(idTokenKey).(string)
-	if !ok {
-		return Session{}, fmt.Errorf("ID token is not present")
-	}
-
-	idToken, err := p.verifier.Verify(ctx, idTokenValue)
-	if err != nil {
-		return Session{}, fmt.Errorf("Error verifying token: %v", err)
-	}
-
-	email, err := getEmail(idToken)
-	if err != nil {
-		return Session{}, fmt.Errorf("Error reading email from ID token: %v", err)
-	}
-
-	log.Printf("Refreshed session for %v", email)
-
-	return Session{
-		Email:        email,
-		Expiry:       idToken.Expiry.Unix(),
-		RefreshToken: token.RefreshToken,
-	}, nil
+	return email, nil
 }
 
 // Store is the session store.
 type Store struct {
-	aead cipher.AEAD
+	key []byte
 }
 
 func newStore() (*Store, error) {
-	key := []byte(*cookieKey)
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, fmt.Errorf("Error creating cipher: %v", err)
-	}
-
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("Error creating AEAD: %v", err)
-	}
-
 	return &Store{
-		aead: aead,
+		key: []byte(*tokenKey),
 	}, nil
 }
 
-func (s *Store) getSession(r *http.Request, dst interface{}) error {
-	cookie, err := r.Cookie(*cookieName)
-	if err != nil {
-		return err
-	}
-
-	err = s.fromCookieValue(cookie.Value, &dst)
-	if err != nil {
-		return fmt.Errorf("Error reading session cookie: %v", err)
-	}
-
-	return nil
+func (s *Store) getKey(token *jwt.Token) (interface{}, error) {
+	return s.key, nil
 }
 
-func (s *Store) setSession(w http.ResponseWriter, src interface{}) error {
-	value, err := s.toCookieValue(src)
+func (s *Store) getSession(r *http.Request) (Claims, error) {
+	cookie, err := r.Cookie(*cookieName)
 	if err != nil {
-		return fmt.Errorf("Error writing session cookie: %v", err)
+		return Claims{}, err
 	}
 
-	cookie := &http.Cookie{
-		Name:     *cookieName,
-		Domain:   *cookieDomain,
-		Path:     *cookiePath,
-		Secure:   *cookieSecure,
-		HttpOnly: *cookieHTTPOnly,
-		MaxAge:   int(*cookieMaxAge / time.Second),
-		Value:    value,
+	var claims Claims
+	_, err = jwt.ParseWithClaims(cookie.Value, &claims, s.getKey)
+	if err != nil {
+		return Claims{}, fmt.Errorf("Error parsing JWT: %v", err)
 	}
-	http.SetCookie(w, cookie)
+
+	return claims, nil
+}
+
+func (s *Store) setSession(w http.ResponseWriter, claims Claims) error {
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+
+	value, err := token.SignedString(s.key)
+	if err != nil {
+		return fmt.Errorf("Error creating JWT: %v", err)
+	}
+
+	maxAge := time.Until(claims.ExpiresAt.Time) / time.Second
+
+	setCookie(w, value, int(maxAge))
 
 	return nil
 }
 
 func (s *Store) clearSession(w http.ResponseWriter) {
-	cookie := &http.Cookie{
-		Name:     *cookieName,
-		Domain:   *cookieDomain,
-		Path:     *cookiePath,
-		Secure:   *cookieSecure,
-		HttpOnly: *cookieHTTPOnly,
-		MaxAge:   -1,
-	}
-	http.SetCookie(w, cookie)
-}
-
-func (s *Store) toCookieValue(src interface{}) (string, error) {
-	serialized, err := serialize(src)
-	if err != nil {
-		return "", err
-	}
-
-	encrypted, err := s.encrypt(serialized)
-	if err != nil {
-		return "", err
-	}
-
-	encoded := encode(encrypted)
-
-	return encoded, nil
-}
-
-func (s *Store) fromCookieValue(src string, dst interface{}) error {
-	decoded, err := decode(src)
-	if err != nil {
-		return err
-	}
-
-	decrypted, err := s.decrypt(decoded)
-	if err != nil {
-		return err
-	}
-
-	err = deserialize(decrypted, dst)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (s *Store) encrypt(value []byte) ([]byte, error) {
-	nonce, err := randomBytes(s.aead.NonceSize())
-	if err != nil {
-		return nil, err
-	}
-
-	encrypted := s.aead.Seal(nil, nonce, value, nil)
-
-	return append(nonce, encrypted...), nil
-}
-
-func (s *Store) decrypt(value []byte) ([]byte, error) {
-	nonce := value[:s.aead.NonceSize()]
-	encrypted := value[s.aead.NonceSize():]
-
-	decrypted, err := s.aead.Open(nil, nonce, encrypted, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	return decrypted, nil
+	setCookie(w, "", -1)
 }
 
 // Users is the users.
@@ -573,71 +389,83 @@ func (u *Users) isAllowed(group string, user string) bool {
 	return false
 }
 
-func getEmail(idToken *oidc.IDToken) (string, error) {
-	var claims struct {
-		Email    string `json:"email"`
-		Verified bool   `json:"email_verified"`
+// Claims is the session JWT claims.
+type Claims struct {
+	jwt.RegisteredClaims
+	State    string `json:"state,omitempty"`
+	Nonce    string `json:"nonce,omitempty"`
+	Redirect string `json:"redirect,omitempty"`
+}
+
+func newLoginClaims(state, nonce, redirect string) Claims {
+	now := time.Now()
+	return Claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(10 * time.Minute)),
+		},
+		Redirect: redirect,
+		State:    state,
+		Nonce:    nonce,
+	}
+}
+
+func newAuthenticatedClaims(subject string) Claims {
+	now := time.Now()
+	return Claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   subject,
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(*tokenExpiration)),
+		},
+	}
+}
+
+func (c Claims) isAuthenticated() bool {
+	return c.Subject != ""
+}
+
+func (c Claims) isFresh() bool {
+	if c.IssuedAt == nil {
+		return false
 	}
 
-	err := idToken.Claims(&claims)
+	return time.Now().Before(c.IssuedAt.Time.Add(*tokenRefresh))
+}
+
+func getEmail(idToken *oidc.IDToken) (string, error) {
+	var userInfo oidc.UserInfo
+	err := idToken.Claims(&userInfo)
 	if err != nil {
 		return "", fmt.Errorf("Error reading claims from token: %v", err)
 	}
 
-	if !claims.Verified {
-		return "", fmt.Errorf("Email is not verified: %v", claims.Email)
+	if !userInfo.EmailVerified {
+		return "", fmt.Errorf("Email is not verified: %v", userInfo.Email)
 	}
 
-	return claims.Email, nil
+	return userInfo.Email, nil
 }
 
-func scopes() []string {
-	if *issuerURL == IssuerURLGoogle {
-		return []string{oidc.ScopeOpenID, ScopeEmail}
+func setCookie(w http.ResponseWriter, value string, maxAge int) {
+	cookie := &http.Cookie{
+		Name:     *cookieName,
+		Value:    value,
+		Domain:   *cookieDomain,
+		Path:     *cookiePath,
+		MaxAge:   maxAge,
+		Secure:   true,
+		HttpOnly: true,
 	}
-
-	return []string{oidc.ScopeOpenID, ScopeEmail, oidc.ScopeOfflineAccess}
-}
-
-func authCodeOptions(nonce string) []oauth2.AuthCodeOption {
-	if *issuerURL == IssuerURLGoogle {
-		return []oauth2.AuthCodeOption{oidc.Nonce(nonce), oauth2.ApprovalForce, oauth2.AccessTypeOffline}
-	}
-
-	return []oauth2.AuthCodeOption{oidc.Nonce(nonce), oauth2.ApprovalForce}
-}
-
-func serialize(src interface{}) ([]byte, error) {
-	return json.Marshal(src)
-}
-
-func deserialize(src []byte, dst interface{}) error {
-	return json.Unmarshal(src, dst)
-}
-
-func encode(value []byte) string {
-	return base64.RawURLEncoding.EncodeToString(value)
-}
-
-func decode(value string) ([]byte, error) {
-	return base64.RawURLEncoding.DecodeString(value)
+	http.SetCookie(w, cookie)
 }
 
 func randomString(size int) (string, error) {
-	bytes, err := randomBytes(size)
+	bytes := make([]byte, size)
+	_, err := rand.Read(bytes)
 	if err != nil {
 		return "", err
 	}
 
-	return encode(bytes), nil
-}
-
-func randomBytes(size int) ([]byte, error) {
-	bytes := make([]byte, size)
-	_, err := rand.Read(bytes)
-	if err != nil {
-		return nil, err
-	}
-
-	return bytes, nil
+	return base64.RawURLEncoding.EncodeToString(bytes), nil
 }

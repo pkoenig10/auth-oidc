@@ -6,7 +6,7 @@
 An [OpenID Connect](https://openid.net/connect/) Relying Party server that can be used with the [NGINX](https://www.nginx.com/) [auth_request module](http://nginx.org/en/docs/http/ngx_http_auth_request_module.html).
 
 Users are authenticated using the configured OpenID Provider and authorized using the configured [users file](#users-file).
-Authentication information is stored in an encrypted cookie.
+Session information is stored in a signed JWT.
 
 ## Endpoints
 
