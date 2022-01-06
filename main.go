@@ -25,11 +25,9 @@ const (
 	loginPath    = "/login"
 	logoutPath   = "/logout"
 	callbackPath = "/callback"
-)
 
-const (
-	groupKey    = "g"
-	redirectKey = "rd"
+	groupKey    = "group"
+	redirectKey = "redirect"
 
 	codeKey  = "code"
 	stateKey = "state"
@@ -126,6 +124,8 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 			s.handleError(w, err, http.StatusInternalServerError)
 			return
 		}
+
+		log.Printf("Refreshed session for %v", claims.Subject)
 	}
 
 	if !s.users.isAllowed(group, claims.Subject) {
@@ -133,7 +133,7 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("X-Email", claims.Subject)
+	w.Header().Set("X-Subject", claims.Subject)
 	w.WriteHeader(http.StatusOK)
 }
 

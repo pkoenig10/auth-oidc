@@ -6,19 +6,19 @@
 An [OpenID Connect](https://openid.net/connect/) Relying Party server that can be used with the [NGINX](https://www.nginx.com/) [auth_request module](http://nginx.org/en/docs/http/ngx_http_auth_request_module.html).
 
 Users are authenticated using the configured OpenID Provider and authorized using the configured [users file](#users-file).
-Session information is stored in a signed JWT.
+Session information is stored as a signed JWT in a cookie.
 
 ## Endpoints
 
 - #### `/auth`
 
-	Performs authentication and authorization. The user's email address is returned in the `X-Email` response header.
+	Performs authentication and authorization. The user's email address is returned in the `X-Subject` response header.
 
     **Query parameters:**
 
     | Name | Required | Description |
     | :-: | :-: | :- |
-    | `g` | No | The group name to use for authorization. Group membership is configured in the [users file](#users-file). |
+    | `group` | No | The group name to use for authorization. Group membership is configured in the [users file](#users-file). |
 
     **Status codes:**
 
@@ -36,7 +36,7 @@ Session information is stored in a signed JWT.
 
     | Name | Required | Description |
     | :-: | :-: | :- |
-    | `rd` | No | The redirect URL to redirect to after a successful login. |
+    | `redirect` | No | The redirect URL to redirect to after a successful login. |
 
     **Status codes:**
 
