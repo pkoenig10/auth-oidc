@@ -1,12 +1,18 @@
-FROM golang:1.17.7 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.17.7 AS builder
 
 COPY . /app
-
 WORKDIR /app
-RUN go build -o /oidc-rp
 
-FROM gcr.io/distroless/base
+ARG TARGETOS
+ARG TARGETARCH
 
-COPY --from=builder /oidc-rp /
+RUN CGO_ENABLED=0 \
+    GOOS=$TARGETOS \
+    GOARCH=$TARGETARCH \
+    go build
+
+FROM gcr.io/distroless/static
+
+COPY --from=builder /app/oidc-rp /
 
 ENTRYPOINT ["/oidc-rp"]
