@@ -7,10 +7,10 @@ import (
 	"encoding/base64"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -367,7 +367,7 @@ func newUsers() (*Users, error) {
 		return &Users{}, nil
 	}
 
-	file, err := ioutil.ReadFile(*usersFile)
+	file, err := os.ReadFile(*usersFile)
 	if err != nil {
 		return nil, fmt.Errorf("Error reading users file '%v': %v", *usersFile, err)
 	}
