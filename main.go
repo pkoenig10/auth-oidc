@@ -77,7 +77,6 @@ func main() {
 	log.Fatal(http.ListenAndServe(*httpAddress, nil))
 }
 
-// Server is the authentication and authorization server.
 type Server struct {
 	provider *Provider
 	store    *Store
@@ -121,7 +120,8 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 
 		err = s.store.setSession(w, claims)
 		if err != nil {
-			s.handleError(w, err, http.StatusInternalServerError)
+			log.Printf("Error setting session: %v", err)
+			s.handleError(w, http.StatusInternalServerError)
 			return
 		}
 
@@ -142,22 +142,22 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	err := verifyRedirect(redirect)
 	if err != nil {
-		err = fmt.Errorf("Error verifying redirect URL: %v", err)
-		s.handleError(w, err, http.StatusBadRequest)
+		log.Printf("Error verifying redirect URL: %v", err)
+		s.handleError(w, http.StatusBadRequest)
 		return
 	}
 
 	state, err := randomString(12)
 	if err != nil {
-		err = fmt.Errorf("Error creating state: %v", err)
-		s.handleError(w, err, http.StatusInternalServerError)
+		log.Printf("Error creating state: %v", err)
+		s.handleError(w, http.StatusInternalServerError)
 		return
 	}
 
 	nonce, err := randomString(12)
 	if err != nil {
-		err = fmt.Errorf("Error creating nonce: %v", err)
-		s.handleError(w, err, http.StatusInternalServerError)
+		log.Printf("Error creating nonce: %v", err)
+		s.handleError(w, http.StatusInternalServerError)
 		return
 	}
 
@@ -165,7 +165,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	err = s.store.setSession(w, claims)
 	if err != nil {
-		s.handleError(w, err, http.StatusInternalServerError)
+		log.Printf("Error setting session: %v", err)
+		s.handleError(w, http.StatusInternalServerError)
 		return
 	}
 
@@ -190,8 +191,8 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	claims, err := s.store.getSession(r)
 	if err != nil {
-		err = fmt.Errorf("Invalid session: %v", err)
-		s.handleError(w, err, http.StatusBadRequest)
+		log.Printf("Invalid session: %v", err)
+		s.handleError(w, http.StatusBadRequest)
 		return
 	}
 
@@ -201,8 +202,8 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if state != claims.State {
-		err = fmt.Errorf("Invalid state")
-		s.handleError(w, err, http.StatusBadRequest)
+		log.Printf("Invalid state")
+		s.handleError(w, http.StatusBadRequest)
 		return
 	}
 
@@ -210,8 +211,8 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	subject, err := s.provider.exchangeCode(r.Context(), code, claims.Nonce)
 	if err != nil {
-		err = fmt.Errorf("Error exchanging code: %v", err)
-		s.handleError(w, err, http.StatusBadRequest)
+		log.Printf("Error exchanging code: %v", err)
+		s.handleError(w, http.StatusBadRequest)
 		return
 	}
 
@@ -219,7 +220,8 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	err = s.store.setSession(w, claims)
 	if err != nil {
-		s.handleError(w, err, http.StatusInternalServerError)
+		log.Printf("Error setting session: %v", err)
+		s.handleError(w, http.StatusInternalServerError)
 		return
 	}
 
@@ -230,13 +232,11 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleError(w http.ResponseWriter, err error, code int) {
-	log.Print(err)
+func (s *Server) handleError(w http.ResponseWriter, code int) {
 	s.store.clearSession(w)
-	http.Error(w, err.Error(), code)
+	w.WriteHeader(code)
 }
 
-// Provider is the token provider.
 type Provider struct {
 	config   *oauth2.Config
 	verifier *oidc.IDTokenVerifier
@@ -245,7 +245,7 @@ type Provider struct {
 func newProvider() (*Provider, error) {
 	provider, err := oidc.NewProvider(context.Background(), *issuerURL)
 	if err != nil {
-		return nil, fmt.Errorf("Error creating provider: %v", err)
+		return nil, fmt.Errorf("error creating provider: %v", err)
 	}
 
 	config := &oauth2.Config{
@@ -276,7 +276,7 @@ func (p *Provider) authCodeURL(state string, nonce string) string {
 func (p *Provider) exchangeCode(ctx context.Context, code string, nonce string) (string, error) {
 	token, err := p.config.Exchange(ctx, code)
 	if err != nil {
-		return "", fmt.Errorf("Error exchanging code: %v", err)
+		return "", fmt.Errorf("error exchanging code: %v", err)
 	}
 
 	idTokenValue, ok := token.Extra(idTokenKey).(string)
@@ -286,21 +286,21 @@ func (p *Provider) exchangeCode(ctx context.Context, code string, nonce string) 
 
 	idToken, err := p.verifier.Verify(ctx, idTokenValue)
 	if err != nil {
-		return "", fmt.Errorf("Error verifying token: %v", err)
+		return "", fmt.Errorf("error verifying token: %v", err)
 	}
 
 	if idToken.Nonce != nonce {
-		return "", fmt.Errorf("Invalid nonce")
+		return "", fmt.Errorf("invalid nonce")
 	}
 
 	var userInfo oidc.UserInfo
 	err = idToken.Claims(&userInfo)
 	if err != nil {
-		return "", fmt.Errorf("Error reading claims from token: %v", err)
+		return "", fmt.Errorf("error reading claims from token: %v", err)
 	}
 
 	if !userInfo.EmailVerified {
-		return "", fmt.Errorf("Email '%v' is not verified", userInfo.Email)
+		return "", fmt.Errorf("email '%v' is not verified", userInfo.Email)
 	}
 
 	log.Printf("Created session for '%v'", userInfo.Email)
@@ -308,7 +308,6 @@ func (p *Provider) exchangeCode(ctx context.Context, code string, nonce string) 
 	return userInfo.Email, nil
 }
 
-// Store is the session store.
 type Store struct {
 	key []byte
 }
@@ -332,7 +331,7 @@ func (s *Store) getSession(r *http.Request) (Claims, error) {
 	var claims Claims
 	_, err = jwt.ParseWithClaims(cookie.Value, &claims, s.getKey)
 	if err != nil {
-		return Claims{}, fmt.Errorf("Error parsing JWT: %v", err)
+		return Claims{}, fmt.Errorf("error parsing JWT: %v", err)
 	}
 
 	return claims, nil
@@ -343,7 +342,7 @@ func (s *Store) setSession(w http.ResponseWriter, claims Claims) error {
 
 	value, err := token.SignedString(s.key)
 	if err != nil {
-		return fmt.Errorf("Error creating JWT: %v", err)
+		return fmt.Errorf("error creating JWT: %v", err)
 	}
 
 	maxAge := time.Until(claims.ExpiresAt.Time) / time.Second
@@ -357,7 +356,6 @@ func (s *Store) clearSession(w http.ResponseWriter) {
 	setCookie(w, "", -1)
 }
 
-// Users is the users.
 type Users struct {
 	users map[string][]string
 }
@@ -369,7 +367,7 @@ func newUsers() (*Users, error) {
 
 	file, err := os.ReadFile(*usersFile)
 	if err != nil {
-		return nil, fmt.Errorf("Error reading users file '%v': %v", *usersFile, err)
+		return nil, fmt.Errorf("error reading users file '%v': %v", *usersFile, err)
 	}
 
 	file = bytes.ToLower(file)
@@ -377,7 +375,7 @@ func newUsers() (*Users, error) {
 	var users map[string][]string
 	err = yaml.Unmarshal(file, &users)
 	if err != nil {
-		return nil, fmt.Errorf("Error parsing users file '%v': %v", *usersFile, err)
+		return nil, fmt.Errorf("error parsing users file '%v': %v", *usersFile, err)
 	}
 
 	return &Users{
@@ -402,7 +400,6 @@ func (u *Users) isAllowed(group string, user string) bool {
 	return false
 }
 
-// Claims is the session JWT claims.
 type Claims struct {
 	jwt.RegisteredClaims
 	State    string `json:"state,omitempty"`
@@ -449,11 +446,11 @@ func (c Claims) isFresh() bool {
 func verifyRedirect(redirect string) error {
 	redirectURL, err := url.Parse(redirect)
 	if err != nil {
-		return fmt.Errorf("Error parsing redirect URL '%v'", redirect)
+		return fmt.Errorf("error parsing redirect URL '%v'", redirect)
 	}
 
 	if !isValidRedirectHost(redirectURL) {
-		return fmt.Errorf("Invalid host in redirect URL '%v'", redirect)
+		return fmt.Errorf("invalid host in redirect URL '%v'", redirect)
 	}
 
 	return nil

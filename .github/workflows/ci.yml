@@ -16,6 +16,9 @@ jobs:
       - run: test -z $(go fmt)
       - run: go build
       - run: go vet
+      - uses: dominikh/staticcheck-action@v1.2.0
+        with:
+          install-go: false
       - run: go test
 
   docker:
