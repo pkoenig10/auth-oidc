@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -51,7 +50,7 @@ var (
 	cookieDomain = flag.String("cookie-domain", "", "The cookie Domain attribute")
 	cookiePath   = flag.String("cookie-path", "/", "The cookie Path attribute")
 
-	usersFile = flag.String("users-file", "", "The users configuration file")
+	configFile = flag.String("config-file", "", "The configuration file")
 )
 
 func main() {
@@ -66,27 +65,13 @@ func main() {
 	if *clientSecret == "" {
 		log.Fatalf("Client secret is not configured")
 	}
+	if *tokenKey == "" {
+		log.Fatalf("Token key is not configured")
+	}
 
-	s := newServer()
-
-	http.HandleFunc(authPath, s.handleAuth)
-	http.HandleFunc(loginPath, s.handleLogin)
-	http.HandleFunc(logoutPath, s.handleLogout)
-	http.HandleFunc(callbackPath, s.handleCallback)
-
-	log.Fatal(http.ListenAndServe(*httpAddress, nil))
-}
-
-type Server struct {
-	provider *Provider
-	store    *Store
-	users    *Users
-}
-
-func newServer() *Server {
-	provider, err := newProvider()
+	config, err := newConfig()
 	if err != nil {
-		log.Fatalf("Error creating token service: %v", err)
+		log.Fatalf("Error creating config: %v", err)
 	}
 
 	store, err := newStore()
@@ -94,16 +79,29 @@ func newServer() *Server {
 		log.Fatalf("Error creating store: %v", err)
 	}
 
-	users, err := newUsers()
+	provider, err := newProvider()
 	if err != nil {
-		log.Fatalf("Error reading users files: %v", err)
+		log.Fatalf("Error creating provider: %v", err)
 	}
 
-	return &Server{
-		provider: provider,
-		store:    store,
-		users:    users,
+	server := &Server{
+		config,
+		store,
+		provider,
 	}
+
+	http.HandleFunc(authPath, server.handleAuth)
+	http.HandleFunc(loginPath, server.handleLogin)
+	http.HandleFunc(logoutPath, server.handleLogout)
+	http.HandleFunc(callbackPath, server.handleCallback)
+
+	log.Fatal(http.ListenAndServe(*httpAddress, nil))
+}
+
+type Server struct {
+	config   *Config
+	store    *Store
+	provider *Provider
 }
 
 func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
@@ -128,7 +126,7 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Refreshed session for %v", claims.Subject)
 	}
 
-	if !s.users.isAllowed(group, claims.Subject) {
+	if !s.config.isAuthorized(group, claims.Subject) {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
@@ -140,7 +138,7 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	redirect := r.URL.Query().Get(redirectKey)
 
-	err := verifyRedirect(redirect)
+	err := s.verifyRedirect(redirect)
 	if err != nil {
 		log.Printf("Error verifying redirect URL: %v", err)
 		s.handleError(w, http.StatusBadRequest)
@@ -237,6 +235,126 @@ func (s *Server) handleError(w http.ResponseWriter, code int) {
 	w.WriteHeader(code)
 }
 
+func (s *Server) verifyRedirect(redirect string) error {
+	redirectURL, err := url.Parse(redirect)
+	if err != nil {
+		return fmt.Errorf("error parsing redirect URL '%v'", redirect)
+	}
+
+	if !s.isValidRedirectHost(redirectURL) {
+		return fmt.Errorf("invalid host in redirect URL '%v'", redirect)
+	}
+
+	return nil
+}
+
+func (s *Server) isValidRedirectHost(redirect *url.URL) bool {
+	if *cookieDomain == "" {
+		return redirect.Host == ""
+	} else {
+		return redirect.Host == *cookieDomain || strings.HasSuffix(redirect.Host, "."+*cookieDomain)
+	}
+}
+
+type Config struct {
+	Groups map[string][]string `json:"groups"`
+}
+
+func newConfig() (*Config, error) {
+	config := Config{}
+
+	if *configFile == "" {
+		return &config, nil
+	}
+
+	data, err := os.ReadFile(*configFile)
+	if err != nil {
+		return nil, fmt.Errorf("error reading configuration file '%v': %v", *configFile, err)
+	}
+
+	err = yaml.Unmarshal(data, &config)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing configuration file '%v': %v", *configFile, err)
+	}
+
+	return &config, nil
+}
+
+func (c *Config) isAuthorized(group string, user string) bool {
+	if group == "" {
+		return true
+	}
+
+	for _, groupUser := range c.Groups[group] {
+		if user == groupUser {
+			return true
+		}
+	}
+
+	return false
+}
+
+type Store struct {
+	key []byte
+}
+
+func newStore() (*Store, error) {
+	return &Store{
+		key: []byte(*tokenKey),
+	}, nil
+}
+
+func (s *Store) getKey(token *jwt.Token) (interface{}, error) {
+	return s.key, nil
+}
+
+func (s *Store) getSession(r *http.Request) (Claims, error) {
+	cookie, err := r.Cookie(*cookieName)
+	if err != nil {
+		return Claims{}, err
+	}
+
+	var claims Claims
+	_, err = jwt.ParseWithClaims(cookie.Value, &claims, s.getKey)
+	if err != nil {
+		return Claims{}, fmt.Errorf("error parsing JWT: %v", err)
+	}
+
+	return claims, nil
+}
+
+func (s *Store) setSession(w http.ResponseWriter, claims Claims) error {
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+
+	value, err := token.SignedString(s.key)
+	if err != nil {
+		return fmt.Errorf("error creating JWT: %v", err)
+	}
+
+	maxAge := time.Until(claims.ExpiresAt.Time) / time.Second
+
+	s.setCookie(w, value, int(maxAge))
+
+	return nil
+}
+
+func (s *Store) clearSession(w http.ResponseWriter) {
+	s.setCookie(w, "", -1)
+}
+
+func (s *Store) setCookie(w http.ResponseWriter, value string, maxAge int) {
+	cookie := &http.Cookie{
+		Name:     *cookieName,
+		Value:    value,
+		Domain:   *cookieDomain,
+		Path:     *cookiePath,
+		MaxAge:   maxAge,
+		Secure:   true,
+		HttpOnly: true,
+	}
+	http.SetCookie(w, cookie)
+}
+
 type Provider struct {
 	config   *oauth2.Config
 	verifier *oidc.IDTokenVerifier
@@ -308,98 +426,6 @@ func (p *Provider) exchangeCode(ctx context.Context, code string, nonce string) 
 	return userInfo.Email, nil
 }
 
-type Store struct {
-	key []byte
-}
-
-func newStore() (*Store, error) {
-	return &Store{
-		key: []byte(*tokenKey),
-	}, nil
-}
-
-func (s *Store) getKey(token *jwt.Token) (interface{}, error) {
-	return s.key, nil
-}
-
-func (s *Store) getSession(r *http.Request) (Claims, error) {
-	cookie, err := r.Cookie(*cookieName)
-	if err != nil {
-		return Claims{}, err
-	}
-
-	var claims Claims
-	_, err = jwt.ParseWithClaims(cookie.Value, &claims, s.getKey)
-	if err != nil {
-		return Claims{}, fmt.Errorf("error parsing JWT: %v", err)
-	}
-
-	return claims, nil
-}
-
-func (s *Store) setSession(w http.ResponseWriter, claims Claims) error {
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-
-	value, err := token.SignedString(s.key)
-	if err != nil {
-		return fmt.Errorf("error creating JWT: %v", err)
-	}
-
-	maxAge := time.Until(claims.ExpiresAt.Time) / time.Second
-
-	setCookie(w, value, int(maxAge))
-
-	return nil
-}
-
-func (s *Store) clearSession(w http.ResponseWriter) {
-	setCookie(w, "", -1)
-}
-
-type Users struct {
-	users map[string][]string
-}
-
-func newUsers() (*Users, error) {
-	if *usersFile == "" {
-		return &Users{}, nil
-	}
-
-	file, err := os.ReadFile(*usersFile)
-	if err != nil {
-		return nil, fmt.Errorf("error reading users file '%v': %v", *usersFile, err)
-	}
-
-	file = bytes.ToLower(file)
-
-	var users map[string][]string
-	err = yaml.Unmarshal(file, &users)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing users file '%v': %v", *usersFile, err)
-	}
-
-	return &Users{
-		users,
-	}, nil
-}
-
-func (u *Users) isAllowed(group string, user string) bool {
-	if u.users == nil {
-		return true
-	}
-
-	group = strings.ToLower(group)
-	user = strings.ToLower(user)
-
-	for _, groupUser := range u.users[group] {
-		if user == groupUser {
-			return true
-		}
-	}
-
-	return false
-}
-
 type Claims struct {
 	jwt.RegisteredClaims
 	State    string `json:"state,omitempty"`
@@ -441,40 +467,6 @@ func (c Claims) isFresh() bool {
 	}
 
 	return time.Now().Before(c.IssuedAt.Time.Add(*tokenRefresh))
-}
-
-func verifyRedirect(redirect string) error {
-	redirectURL, err := url.Parse(redirect)
-	if err != nil {
-		return fmt.Errorf("error parsing redirect URL '%v'", redirect)
-	}
-
-	if !isValidRedirectHost(redirectURL) {
-		return fmt.Errorf("invalid host in redirect URL '%v'", redirect)
-	}
-
-	return nil
-}
-
-func isValidRedirectHost(redirect *url.URL) bool {
-	if *cookieDomain == "" {
-		return redirect.Host == ""
-	} else {
-		return redirect.Host == *cookieDomain || strings.HasSuffix(redirect.Host, "."+*cookieDomain)
-	}
-}
-
-func setCookie(w http.ResponseWriter, value string, maxAge int) {
-	cookie := &http.Cookie{
-		Name:     *cookieName,
-		Value:    value,
-		Domain:   *cookieDomain,
-		Path:     *cookiePath,
-		MaxAge:   maxAge,
-		Secure:   true,
-		HttpOnly: true,
-	}
-	http.SetCookie(w, cookie)
 }
 
 func randomString(size int) (string, error) {

@@ -16,7 +16,7 @@ Users are authenticated using the configured OpenID Provider and authorized usin
 
     | Name | Required | Description |
     | :-: | :-: | :- |
-    | `group` | No | The group name to use for authorization. Group membership is configured in the [users file](#users-file). |
+    | `group` | No | The group name to use for authorization. |
 
     **Status codes:**
 
@@ -66,22 +66,25 @@ Users are authenticated using the configured OpenID Provider and authorized usin
 
 ## Configuration
 
-The server is configured using command-line flags. Detailed usage information is available using the `-help` flag.
+Configuration is provided using command-line flags and a YAML configuration file.
 
-### Users file
+Detailed usage information is available using the `-help` flag.
 
-Authorization is performed by checking whether the user is a member of the given group. Group membership is configured using a YAML users file that maps group names to a list of email addresses of users in that group.
+### Configuration file
 
-If the users file is not configured, then the group parameter will be ignored and all users will be considered authorized.
+- `groups`
 
-##### Example
+    Group memberships to use for authorization.
+
+#### Example
 
 ```yaml
-group1:
-  - user1@example.com
-group2:
-  - user1@example.com
-  - user2@example.com
+groups:
+  group1:
+    - user1@example.com
+  group2:
+    - user1@example.com
+    - user2@example.com
 ```
 
 [actions]: https://github.com/pkoenig10/oidc-rp/actions
