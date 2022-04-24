@@ -1,18 +1,16 @@
 # oidc-rp
 
-[![](https://img.shields.io/github/workflow/status/pkoenig10/oidc-rp/CI?label=ci)][actions]
-[![](https://img.shields.io/github/workflow/status/pkoenig10/oidc-rp/Release?label=release)][actions]
+[![](https://github.com/pkoenig10/oidc-rp/actions/workflows/ci.yml/badge.svg)][actions]
 
 An [OpenID Connect](https://openid.net/connect/) Relying Party server that can be used with the [NGINX](https://www.nginx.com/) [auth_request module](http://nginx.org/en/docs/http/ngx_http_auth_request_module.html).
 
-Users are authenticated using the configured OpenID Provider and authorized using the configured [users file](#users-file).
-Session information is stored as a signed JWT in a cookie.
+Users are authenticated using the configured OpenID Provider and authorized using the provided [configuration](#configuration). Session information is stored as a signed JWT in a cookie.
 
 ## Endpoints
 
 - #### `/auth`
 
-	Performs authentication and authorization. The user's email address is returned in the `X-Subject` response header.
+    Performs authentication and authorization. The user's email address is returned in the `X-Subject` response header.
 
     **Query parameters:**
 
