@@ -9,42 +9,11 @@ on:
 jobs:
   test:
     name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v2
-      - run: test -z $(go fmt)
-      - run: go build
-      - run: go vet
-      - uses: dominikh/staticcheck-action@v1.2.0
-        with:
-          install-go: false
-      - run: go test
+    uses: pkoenig10/workflows/.github/workflows/go.yml@master
 
   docker:
     name: Docker
-    runs-on: ubuntu-latest
-    steps:
-      - uses: docker/setup-buildx-action@v1
-      - uses: docker/login-action@v1
-        if: github.event_name == 'push'
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - uses: docker/login-action@v1
-        if: github.event_name == 'push'
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.CR_PAT }}
-      - uses: docker/build-push-action@v2
-        with:
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name == 'push' }}
-          tags: |
-            pkoenig10/oidc-rp:latest
-            pkoenig10/oidc-rp:${{ github.sha }}
-            ghcr.io/pkoenig10/oidc-rp:latest
-            ghcr.io/pkoenig10/oidc-rp:${{ github.sha }}
+    uses: pkoenig10/workflows/.github/workflows/docker.yml@master
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
