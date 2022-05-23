@@ -43,8 +43,7 @@ var (
 	clientSecret = flag.String("client-secret", "", "The OAuth2 client secret")
 
 	tokenKey        = flag.String("token-key", "", "The JWT signing key")
-	tokenRefresh    = flag.Duration("token-refresh", time.Hour, "The JWT refresh duration")
-	tokenExpiration = flag.Duration("token-expiration", 30*24*time.Hour, "The JWT expiration duration")
+	tokenExpiration = flag.Duration("token-expiration", 7*24*time.Hour, "The JWT expiration duration")
 
 	cookieName   = flag.String("cookie-name", "_oidc", "The cookie name")
 	cookieDomain = flag.String("cookie-domain", "", "The cookie Domain attribute")
@@ -111,19 +110,6 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 	if err != nil || !claims.isAuthenticated() {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
-	}
-
-	if !claims.isFresh() {
-		claims = newAuthenticatedClaims(claims.Subject)
-
-		err = s.store.setSession(w, claims)
-		if err != nil {
-			log.Printf("Error setting session: %v", err)
-			s.handleError(w, http.StatusInternalServerError)
-			return
-		}
-
-		log.Printf("Refreshed session for %v", claims.Subject)
 	}
 
 	if !s.config.isAuthorized(group, claims.Subject) {
@@ -387,8 +373,7 @@ func newProvider() (*Provider, error) {
 func (p *Provider) authCodeURL(state string, nonce string) string {
 	return p.config.AuthCodeURL(
 		state,
-		oidc.Nonce(nonce),
-		oauth2.SetAuthURLParam("prompt", "select_account"))
+		oidc.Nonce(nonce))
 }
 
 func (p *Provider) exchangeCode(ctx context.Context, code string, nonce string) (string, error) {
@@ -437,7 +422,6 @@ func newLoginClaims(state, nonce, redirect string) Claims {
 	now := time.Now()
 	return Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
-			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(10 * time.Minute)),
 		},
 		Redirect: redirect,
@@ -451,7 +435,6 @@ func newAuthenticatedClaims(subject string) Claims {
 	return Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   subject,
-			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(*tokenExpiration)),
 		},
 	}
@@ -459,14 +442,6 @@ func newAuthenticatedClaims(subject string) Claims {
 
 func (c Claims) isAuthenticated() bool {
 	return c.Subject != ""
-}
-
-func (c Claims) isFresh() bool {
-	if c.IssuedAt == nil {
-		return false
-	}
-
-	return time.Now().Before(c.IssuedAt.Time.Add(*tokenRefresh))
 }
 
 func randomString(size int) (string, error) {
