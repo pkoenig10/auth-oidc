@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM golang:1.18.4 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.19.0 AS builder
 
 COPY . /app
 WORKDIR /app
