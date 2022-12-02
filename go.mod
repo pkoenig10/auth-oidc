@@ -4,7 +4,7 @@ go 1.17
 
 require (
 	github.com/coreos/go-oidc/v3 v3.4.0
-	github.com/golang-jwt/jwt/v4 v4.4.2
+	github.com/golang-jwt/jwt/v4 v4.4.3
 	golang.org/x/oauth2 v0.0.0-20220822191816-0ebed06d0094
 	gopkg.in/yaml.v2 v2.4.0
 )
