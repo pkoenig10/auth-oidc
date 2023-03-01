@@ -5,7 +5,7 @@ go 1.19
 require (
 	github.com/coreos/go-oidc/v3 v3.5.0
 	github.com/golang-jwt/jwt/v4 v4.5.0
-	golang.org/x/oauth2 v0.4.0
+	golang.org/x/oauth2 v0.5.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -15,5 +15,5 @@ require (
 	golang.org/x/crypto v0.6.0 // indirect
 	golang.org/x/net v0.7.0 // indirect
 	google.golang.org/appengine v1.6.7 // indirect
-	google.golang.org/protobuf v1.28.0 // indirect
+	google.golang.org/protobuf v1.28.1 // indirect
 )
