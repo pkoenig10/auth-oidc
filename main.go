@@ -108,7 +108,11 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 
 	claims, err := s.store.getSession(r)
 	if err != nil || !claims.isAuthenticated() {
-		w.WriteHeader(http.StatusUnauthorized)
+		if r.URL.Query().Has(redirectKey) {
+			s.handleLogin(w, r)
+		} else {
+			w.WriteHeader(http.StatusUnauthorized)
+		}
 		return
 	}
 
@@ -222,6 +226,10 @@ func (s *Server) handleError(w http.ResponseWriter, code int) {
 }
 
 func (s *Server) verifyRedirect(redirect string) error {
+	if redirect == "" {
+		return nil
+	}
+
 	redirectURL, err := url.Parse(redirect)
 	if err != nil {
 		return fmt.Errorf("error parsing redirect URL '%v'", redirect)
