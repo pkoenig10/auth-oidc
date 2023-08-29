@@ -2,7 +2,7 @@
 
 [![](https://github.com/pkoenig10/oidc-rp/actions/workflows/ci.yml/badge.svg)][actions]
 
-An [OpenID Connect](https://openid.net/connect/) Relying Party server that can be used with the [NGINX](https://www.nginx.com/) [auth_request module](http://nginx.org/en/docs/http/ngx_http_auth_request_module.html).
+An [OpenID Connect](https://openid.net/connect/) Relying Party designed to support authentication and authorization in a reverse proxy.
 
 Users are authenticated using the configured OpenID Provider and authorized using the provided [configuration](#configuration). Session information is stored as a signed JWT in a cookie.
 
@@ -17,14 +17,16 @@ Users are authenticated using the configured OpenID Provider and authorized usin
     | Name | Required | Description |
     | :-: | :-: | :- |
     | `group` | No | The group name to use for authorization. |
+    | `redirect` | No | The URL to redirect to after a successful login. |
 
     **Status codes:**
 
     | Status | Description |
     | :-: | :- |
     | 200 | The user is authenticated and authorized. |
-    | 401 | The user is not authenticated. The user should be redirected to the login endpoint. |
-    | 403 | The user is authenticated but not authorized. This indicates that the user is not a member of the given group. |
+    | 302 | The user is not authenticated and a redirect URL was provided. Redirects to the [OpenID Provider Authorization Endpoint](https://openid.net/specs/openid-connect-core-1_0.html#AuthorizationEndpoint). |
+    | 401 | The user is not authenticated and a redirect URL was not provided. |
+    | 403 | The user is authenticated but not authorized. |
 
 - #### `/login`
 
@@ -34,7 +36,7 @@ Users are authenticated using the configured OpenID Provider and authorized usin
 
     | Name | Required | Description |
     | :-: | :-: | :- |
-    | `redirect` | No | The redirect URL to redirect to after a successful login. |
+    | `redirect` | No | The URL to redirect to after a successful login. |
 
     **Status codes:**
 
@@ -60,9 +62,8 @@ Users are authenticated using the configured OpenID Provider and authorized usin
 
     | Status | Description |
     | :-: | :- |
-    | 200 | The user was successfully logged in and no redirect URL was given. |
-    | 302 | The user was successfully logged in and redirects to the given redirect URL. |
-    | 400 | The request was invalid. |
+    | 200 | The user was successfully logged in and a redirect URL was not provided. |
+    | 302 | The user was successfully logged in and a redirect URL was provided. Redirects to the provided redirect URL. |
 
 ## Configuration
 
