@@ -3,9 +3,9 @@ module github.com/pkoenig10/oidc-rp
 go 1.19
 
 require (
-	github.com/coreos/go-oidc/v3 v3.7.0
+	github.com/coreos/go-oidc/v3 v3.8.0
 	github.com/golang-jwt/jwt/v4 v4.5.0
-	golang.org/x/oauth2 v0.13.0
+	golang.org/x/oauth2 v0.15.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
