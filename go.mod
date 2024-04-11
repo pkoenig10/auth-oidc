@@ -1,6 +1,6 @@
 module github.com/pkoenig10/oidc-rp
 
-go 1.19
+go 1.21
 
 require (
 	github.com/coreos/go-oidc/v3 v3.10.0
