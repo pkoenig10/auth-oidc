@@ -1,6 +1,6 @@
-# oidc-rp
+# auth-oidc
 
-[![](https://github.com/pkoenig10/oidc-rp/actions/workflows/ci.yml/badge.svg)][actions]
+[![](https://github.com/pkoenig10/auth-oidc/actions/workflows/ci.yml/badge.svg)][actions]
 
 An [OpenID Connect](https://openid.net/connect/) Relying Party designed to support authentication and authorization in a reverse proxy.
 
@@ -88,4 +88,4 @@ groups:
     - user2@example.com
 ```
 
-[actions]: https://github.com/pkoenig10/oidc-rp/actions
+[actions]: https://github.com/pkoenig10/auth-oidc/actions
