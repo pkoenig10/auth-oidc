@@ -45,7 +45,7 @@ var (
 	tokenKey        = flag.String("token-key", "", "The JWT signing key")
 	tokenExpiration = flag.Duration("token-expiration", 7*24*time.Hour, "The JWT expiration duration")
 
-	cookieName   = flag.String("cookie-name", "_oidc", "The cookie name")
+	cookieName   = flag.String("cookie-name", "_token", "The cookie name")
 	cookieDomain = flag.String("cookie-domain", "", "The cookie Domain attribute")
 	cookiePath   = flag.String("cookie-path", "/", "The cookie Path attribute")
 
