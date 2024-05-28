@@ -1,4 +1,4 @@
-module github.com/pkoenig10/oidc-rp
+module github.com/pkoenig10/auth-oidc
 
 go 1.21
 
