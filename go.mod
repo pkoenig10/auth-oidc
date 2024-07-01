@@ -5,7 +5,7 @@ go 1.21
 require (
 	github.com/coreos/go-oidc/v3 v3.10.0
 	github.com/golang-jwt/jwt/v4 v4.5.0
-	golang.org/x/oauth2 v0.20.0
+	golang.org/x/oauth2 v0.21.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
