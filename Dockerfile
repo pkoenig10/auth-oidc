@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM golang:1.23.0 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.23.1 AS builder
 
 COPY . /app
 WORKDIR /app
@@ -11,7 +11,7 @@ RUN CGO_ENABLED=0 \
     GOARCH=$TARGETARCH \
     go build
 
-FROM gcr.io/distroless/static:latest@sha256:ce46866b3a5170db3b49364900fb3168dc0833dfb46c26da5c77f22abb01d8c3
+FROM gcr.io/distroless/static:latest@sha256:69830f29ed7545c762777507426a412f97dad3d8d32bae3e74ad3fb6160917ea
 
 COPY --from=builder /app/auth-oidc /
 
