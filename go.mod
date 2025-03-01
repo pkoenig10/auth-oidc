@@ -1,7 +1,6 @@
 module github.com/pkoenig10/auth-oidc
 
-go 1.21
-toolchain go1.23.6
+go 1.24.0
 
 require (
 	github.com/coreos/go-oidc/v3 v3.12.0
