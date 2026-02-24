@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -34,59 +33,41 @@ const (
 	idTokenKey = "id_token"
 )
 
-var (
-	httpAddress = flag.String("http-address", ":80", "The address on which to listen for requests")
-
-	issuerURL    = flag.String("issuer-url", "https://accounts.google.com", "The OpenID Connect issuer URL")
-	externalURL  = flag.String("external-url", "", "The external URL of this server")
-	clientID     = flag.String("client-id", "", "The OAuth2 client ID")
-	clientSecret = flag.String("client-secret", "", "The OAuth2 client secret")
-
-	tokenKey        = flag.String("token-key", "", "The JWT signing key")
-	tokenExpiration = flag.Duration("token-expiration", 7*24*time.Hour, "The JWT expiration duration")
-
-	cookieName   = flag.String("cookie-name", "_token", "The cookie name")
-	cookieDomain = flag.String("cookie-domain", "", "The cookie Domain attribute")
-	cookiePath   = flag.String("cookie-path", "/", "The cookie Path attribute")
-
-	configFile = flag.String("config-file", "", "The configuration file")
-)
-
 func main() {
-	flag.Parse()
+	listenAddress := getEnv("LISTEN_ADDRESS", ":80", false)
 
-	if *externalURL == "" {
-		log.Fatalf("External URL is not configured")
-	}
-	if *clientID == "" {
-		log.Fatalf("Client ID is not configured")
-	}
-	if *clientSecret == "" {
-		log.Fatalf("Client secret is not configured")
-	}
-	if *tokenKey == "" {
-		log.Fatalf("Token key is not configured")
-	}
+	issuerURL := getEnv("ISSUER_URL", "https://accounts.google.com", false)
+	externalURL := getEnv("EXTERNAL_URL", "", true)
+	clientID := getEnv("CLIENT_ID", "", true)
+	clientSecret := getEnv("CLIENT_SECRET", "", true)
 
-	config, err := newConfig()
+	tokenKey := getEnv("TOKEN_KEY", "", true)
+	tokenExpiration := getEnv("TOKEN_EXPIRATION", "168h", false)
+
+	cookieName := getEnv("COOKIE_NAME", "_token", false)
+	cookieDomain := getEnv("COOKIE_DOMAIN", "", false)
+	cookiePath := getEnv("COOKIE_PATH", "/", false)
+
+	configPath := getEnv("CONFIG_PATH", "config.yml", false)
+
+	config, err := newConfig(configPath)
 	if err != nil {
 		log.Fatalf("Error creating config: %v", err)
 	}
 
-	store, err := newStore()
+	store, err := newStore(tokenKey, cookieName, cookieDomain, cookiePath)
 	if err != nil {
 		log.Fatalf("Error creating store: %v", err)
 	}
 
-	provider, err := newProvider()
+	provider, err := newProvider(issuerURL, externalURL, clientID, clientSecret)
 	if err != nil {
 		log.Fatalf("Error creating provider: %v", err)
 	}
 
-	server := &Server{
-		config,
-		store,
-		provider,
+	server, err := newServer(tokenExpiration, config, store, provider)
+	if err != nil {
+		log.Fatalf("Error creating server: %v", err)
 	}
 
 	http.HandleFunc(authPath, server.handleAuth)
@@ -94,13 +75,28 @@ func main() {
 	http.HandleFunc(logoutPath, server.handleLogout)
 	http.HandleFunc(callbackPath, server.handleCallback)
 
-	log.Fatal(http.ListenAndServe(*httpAddress, nil))
+	log.Fatal(http.ListenAndServe(listenAddress, nil))
 }
 
 type Server struct {
-	config   *Config
-	store    *Store
-	provider *Provider
+	tokenExpiration time.Duration
+	config          *Config
+	store           *Store
+	provider        *Provider
+}
+
+func newServer(tokenExpiration string, config *Config, store *Store, provider *Provider) (*Server, error) {
+	tokenExpirationDuration, err := time.ParseDuration(tokenExpiration)
+	if err != nil {
+		return nil, fmt.Errorf("invalid token expiration '%v': %v", tokenExpiration, err)
+	}
+
+	return &Server{
+		tokenExpirationDuration,
+		config,
+		store,
+		provider,
+	}, nil
 }
 
 func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
@@ -149,7 +145,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims := newLoginClaims(state, nonce, redirect)
+	claims := newLoginClaims(state, nonce, redirect, 10*time.Minute)
 
 	err = s.store.setSession(w, claims)
 	if err != nil {
@@ -204,7 +200,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims = newAuthenticatedClaims(subject)
+	claims = newAuthenticatedClaims(subject, s.tokenExpiration)
 
 	err = s.store.setSession(w, claims)
 	if err != nil {
@@ -235,40 +231,32 @@ func (s *Server) verifyRedirect(redirect string) error {
 		return fmt.Errorf("error parsing redirect URL '%v'", redirect)
 	}
 
-	if !s.isValidRedirectHost(redirectURL) {
-		return fmt.Errorf("invalid host in redirect URL '%v'", redirect)
+	if !s.store.isValidRedirect(redirectURL) {
+		return fmt.Errorf("invalid redirect URL '%v'", redirect)
 	}
 
 	return nil
-}
-
-func (s *Server) isValidRedirectHost(redirect *url.URL) bool {
-	if *cookieDomain == "" {
-		return redirect.Host == ""
-	} else {
-		return redirect.Host == *cookieDomain || strings.HasSuffix(redirect.Host, "."+*cookieDomain)
-	}
 }
 
 type Config struct {
 	Groups map[string][]string `json:"groups"`
 }
 
-func newConfig() (*Config, error) {
+func newConfig(configPath string) (*Config, error) {
 	config := Config{}
 
-	if *configFile == "" {
+	if configPath == "" {
 		return &config, nil
 	}
 
-	data, err := os.ReadFile(*configFile)
+	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return nil, fmt.Errorf("error reading configuration file '%v': %v", *configFile, err)
+		return nil, fmt.Errorf("error reading configuration file '%v': %v", configPath, err)
 	}
 
 	err = yaml.Unmarshal(data, &config)
 	if err != nil {
-		return nil, fmt.Errorf("error parsing configuration file '%v': %v", *configFile, err)
+		return nil, fmt.Errorf("error parsing configuration file '%v': %v", configPath, err)
 	}
 
 	return &config, nil
@@ -289,27 +277,33 @@ func (c *Config) isAuthorized(group string, user string) bool {
 }
 
 type Store struct {
-	key []byte
+	tokenKey     []byte
+	cookieName   string
+	cookieDomain string
+	cookiePath   string
 }
 
-func newStore() (*Store, error) {
+func newStore(tokenKey string, cookieName string, cookieDomain string, cookiePath string) (*Store, error) {
 	return &Store{
-		key: []byte(*tokenKey),
+		[]byte(tokenKey),
+		cookieName,
+		cookieDomain,
+		cookiePath,
 	}, nil
 }
 
-func (s *Store) getKey(token *jwt.Token) (interface{}, error) {
-	return s.key, nil
+func (s *Store) getTokenKey(token *jwt.Token) (interface{}, error) {
+	return s.tokenKey, nil
 }
 
 func (s *Store) getSession(r *http.Request) (Claims, error) {
-	cookie, err := r.Cookie(*cookieName)
+	cookie, err := r.Cookie(s.cookieName)
 	if err != nil {
 		return Claims{}, err
 	}
 
 	var claims Claims
-	_, err = jwt.ParseWithClaims(cookie.Value, &claims, s.getKey)
+	_, err = jwt.ParseWithClaims(cookie.Value, &claims, s.getTokenKey)
 	if err != nil {
 		return Claims{}, fmt.Errorf("error parsing JWT: %v", err)
 	}
@@ -320,7 +314,7 @@ func (s *Store) getSession(r *http.Request) (Claims, error) {
 func (s *Store) setSession(w http.ResponseWriter, claims Claims) error {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 
-	value, err := token.SignedString(s.key)
+	value, err := token.SignedString(s.tokenKey)
 	if err != nil {
 		return fmt.Errorf("error creating JWT: %v", err)
 	}
@@ -338,10 +332,10 @@ func (s *Store) clearSession(w http.ResponseWriter) {
 
 func (s *Store) setCookie(w http.ResponseWriter, value string, maxAge int) {
 	cookie := &http.Cookie{
-		Name:     *cookieName,
+		Name:     s.cookieName,
 		Value:    value,
-		Domain:   *cookieDomain,
-		Path:     *cookiePath,
+		Domain:   s.cookieDomain,
+		Path:     s.cookiePath,
 		MaxAge:   maxAge,
 		Secure:   true,
 		HttpOnly: true,
@@ -349,32 +343,40 @@ func (s *Store) setCookie(w http.ResponseWriter, value string, maxAge int) {
 	http.SetCookie(w, cookie)
 }
 
+func (s *Store) isValidRedirect(redirect *url.URL) bool {
+	if s.cookieDomain == "" {
+		return redirect.Host == ""
+	} else {
+		return redirect.Host == s.cookieDomain || strings.HasSuffix(redirect.Host, "."+s.cookieDomain)
+	}
+}
+
 type Provider struct {
 	config   *oauth2.Config
 	verifier *oidc.IDTokenVerifier
 }
 
-func newProvider() (*Provider, error) {
-	provider, err := oidc.NewProvider(context.Background(), *issuerURL)
+func newProvider(issuerURL string, externalURL string, clientID string, clientSecret string) (*Provider, error) {
+	provider, err := oidc.NewProvider(context.Background(), issuerURL)
 	if err != nil {
 		return nil, fmt.Errorf("error creating provider: %v", err)
 	}
 
 	config := &oauth2.Config{
-		ClientID:     *clientID,
-		ClientSecret: *clientSecret,
-		RedirectURL:  strings.TrimSuffix(*externalURL, "/") + callbackPath,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		RedirectURL:  strings.TrimSuffix(externalURL, "/") + callbackPath,
 		Endpoint:     provider.Endpoint(),
 		Scopes:       []string{oidc.ScopeOpenID, "email"},
 	}
 
 	verifier := provider.Verifier(&oidc.Config{
-		ClientID: *clientID,
+		ClientID: clientID,
 	})
 
 	return &Provider{
-		config:   config,
-		verifier: verifier,
+		config,
+		verifier,
 	}, nil
 }
 
@@ -426,11 +428,12 @@ type Claims struct {
 	Redirect string `json:"redirect,omitempty"`
 }
 
-func newLoginClaims(state, nonce, redirect string) Claims {
+func newLoginClaims(state string, nonce string, redirect string, expiration time.Duration) Claims {
 	now := time.Now()
+
 	return Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(now.Add(10 * time.Minute)),
+			ExpiresAt: jwt.NewNumericDate(now.Add(expiration)),
 		},
 		Redirect: redirect,
 		State:    state,
@@ -438,18 +441,30 @@ func newLoginClaims(state, nonce, redirect string) Claims {
 	}
 }
 
-func newAuthenticatedClaims(subject string) Claims {
+func newAuthenticatedClaims(subject string, expiration time.Duration) Claims {
 	now := time.Now()
+
 	return Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   subject,
-			ExpiresAt: jwt.NewNumericDate(now.Add(*tokenExpiration)),
+			ExpiresAt: jwt.NewNumericDate(now.Add(expiration)),
 		},
 	}
 }
 
 func (c Claims) isAuthenticated() bool {
 	return c.Subject != ""
+}
+
+func getEnv(name string, defaultValue string, required bool) string {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		if required {
+			log.Fatalf("Environment varaible '%v' is required but not set", name)
+		}
+		return defaultValue
+	}
+	return value
 }
 
 func randomString(size int) (string, error) {
