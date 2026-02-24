@@ -4,7 +4,7 @@
 
 An [OpenID Connect](https://openid.net/connect/) Relying Party designed to support authentication and authorization in a reverse proxy.
 
-Users are authenticated using the configured OpenID Provider and authorized using the provided [configuration](#configuration). Session information is stored as a signed JWT in a cookie.
+Users are authenticated using the configured OpenID Provider and authorized using the provided [configuration file](#configuration-file). Session information is stored as a signed JWT in a cookie.
 
 ## Endpoints
 
@@ -67,15 +67,29 @@ Users are authenticated using the configured OpenID Provider and authorized usin
 
 ## Configuration
 
-Configuration is provided using command-line flags and a YAML configuration file.
+### Environment variables
 
-Detailed usage information is available using the `-help` flag.
+| Variable | Description | Required? | Default |
+|:-|:-|:-:|:-:|
+| `LISTEN_ADDRESS` | The network address the server listens on. | No | `:80` |
+| `ISSUER_URL` | The OpenID Connect issuer URL. | No | `https://accounts.google.com` |
+| `EXTERNAL_URL` | The external URL of this server. Used to construct the OAuth2 redirect URL. | Yes| - |
+| `CLIENT_ID` | The OpenID Connect client ID. | Yes | - |
+| `CLIENT_SECRET` | The OpenID Connect client secret. | Yes | - |
+| `TOKEN_KEY` | The JWT signing key. | Yes | - |
+| `TOKEN_EXPIRATION` | The JWT expiration duration. | No | `168h` |
+| `COOKIE_NAME` | The cookie name. | No | `_token` |
+| `COOKIE_DOMAIN` | The cookie `Domain` attribute. | No | `` |
+| `COOKIE_PATH` | The cookie `Path` attribute. | No | `/` |
+| `CONFIG_PATH` | The configation file path. | No | `config.yml` |
 
 ### Configuration file
 
-- `groups`
+The configuration file is a YAML file with the following properties:
 
-    Group memberships to use for authorization.
+| Property | Object | Description |
+|:-|:-:|:-|
+| `groups` | Object | Group memberships to use for authorization. |
 
 #### Example
 
